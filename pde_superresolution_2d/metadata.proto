@@ -1,0 +1,136 @@
+// Copyright 2018 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
+// Metadata for pde_superresolution datasets.
+
+syntax = "proto3";
+
+package research_biology.pde_superres;
+
+// Stores information of states that are part of the dataset for parsing.
+message State {
+  string name = 1;
+
+  // Derivative orders data.
+  int32 deriv_x = 2;
+  int32 deriv_y = 3;
+  int32 deriv_t = 4;
+
+  // Grid offset data. (integer number of half-steps)
+  int32 offset_x = 5;
+  int32 offset_y = 6;
+}
+
+// Stores information about discretization.
+message Grid {
+  int32 size_x = 1;
+  int32 size_y = 2;
+  // The length of a cell in arbitrary units.
+  double step = 3;
+}
+
+// Stores one of the specific velocity fields. All implementations of the
+// VelocityField must be included under oneof and create corresponding proto
+// in the VelocityField.to_proto() method.
+message VelocityField {
+  oneof v_field {
+    ConstantVelocityField constant_v_field = 1;
+  }
+}
+
+// Stores one of the specific equations. All implementations of the
+// Equation must be included under oneof and create corresponding proto
+// in the Equation.to_proto() method. Any unset parameter should be interpreted
+// as non-fixed (varying throughout the dataset).
+message Equation {
+  // Enumerates possible options of discretization schemes. Allows to
+  // differentiate between different implementations of the same equation.
+  enum DiscretizationScheme {
+    UNDEFINED = 0;
+    FINITE_DIFF = 1;
+    FINITE_VOLUME = 2;
+    UPWIND = 3;
+  }
+
+  oneof continuous_equation {
+    AdvectionDiffusionEquation advection_diffusion = 1;
+    ConvectionDiffusionEquation in_state_velocity_advection_diffusion = 3;
+  }
+
+  DiscretizationScheme scheme = 2;
+}
+
+// Stores the model used to generate data.
+message Model {
+  oneof model {
+    RollFiniteDifferenceSolver roll_finite_difference = 1;
+  }
+}
+
+
+// Stores all components of the random constant velocity field.
+message ConstantVelocityField {
+  int32 num_terms = 1;
+  int32 max_periods = 2;
+  repeated double amplitudes = 3;
+  repeated int32 x_wavenumbers = 4;
+  repeated int32 y_wavenumbers = 5;
+  repeated double phase_shifts = 6;
+}
+
+// Stores parameters of FiniteDifferenceAdvection equation.
+message AdvectionDiffusionEquation {
+  double diffusion_const = 1;
+  VelocityField velocity_field = 2;
+}
+
+// Stores parameters of FiniteDifferenceAdvection equation.
+message ConvectionDiffusionEquation {
+  double diffusion_const = 1;
+}
+
+// Stores parameters of FiniteDifference solver.
+message RollFiniteDifferenceSolver {
+}
+
+// Stores all information about the dataset.
+//
+// Can be used to rebuild system components (grid, equation, solver).
+// Provides information about initialization, integration and mean and variance
+// of the primary input, produced by the dataset builder.
+message Dataset {
+  // Stores single state component. (e.g. concentration on a grid.)
+  message DataComponent {
+    Grid grid = 1;
+    State state_key = 2;
+  }
+
+  repeated DataComponent components = 1;
+  repeated string file_names = 2;
+
+  // System components
+  Equation equation = 3;
+  Model model = 4;
+  Grid low_resolution_grid = 5;
+  Grid high_resolution_grid = 6;
+
+  // Initialization and integration parameters
+  double max_time = 7;
+  int32 num_time_slices = 8;
+  double input_mean = 9;
+  double input_variance = 10;
+  int32 initialization_seed_offset = 11;
+  int32 num_samples = 12;
+  int32 num_shards = 13;
+}

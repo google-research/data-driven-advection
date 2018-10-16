@@ -1,0 +1,320 @@
+# Copyright 2018 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Deterministic velocity fields for advection-diffusion equation."""
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import enum
+import numpy as np
+import tensorflow as tf
+from typing import Any, Tuple
+
+from pde_superresolution_2d import grids
+from pde_superresolution_2d import metadata_pb2
+
+
+class VelocityComponent(enum.Enum):
+  """Enum representing valid velocity field components."""
+  X = 1
+  Y = 2
+
+
+class VelocityField(object):
+  """Base class for implementations of velocity fields.
+
+  Defines methods get_velocity_x and get_velocity_y used by equation classes.
+  """
+
+  def _max_value(self) -> float:
+    """Returns an upper bound on the value of the velocity field.
+
+    Returns:
+      Upper bound on the value of the velocity field.
+    """
+    raise NotImplementedError
+
+  def get_velocity_x(
+      self,
+      t: float,
+      grid: grids.Grid,
+      shift: Tuple[int, int] = (0, 0)
+  ) -> tf.Tensor:
+    """Returns a tensor holding x component of the velocity field.
+
+    Args:
+      t: Time at which to evaluate the velocity fields.
+      grid: Grid object on which the field is evaluated.
+      shift: Number of half-step shifts on the grid along x and y axes.
+
+    Returns:
+      x component of the velocity field as tensor with shape=[grid.size_x,
+      grid.size_y] and dtype=float64.
+    """
+    raise NotImplementedError
+
+  def get_velocity_y(
+      self,
+      t: float,
+      grid: grids.Grid,
+      shift: Tuple[int, int] = (0, 0)
+  ) -> tf.Tensor:
+    """Returns a tensor holding y component of the velocity field.
+
+    Args:
+      t: Time at which to evaluate the velocity fields.
+      grid: Grid object on which the field is evaluated.
+      shift: Number of half-step shifts on the grid along x and y axes.
+
+    Returns:
+      y component of the velocity field as tensor with shape=[grid.size_x,
+      grid.size_y] and dtype=float64.
+    """
+    raise NotImplementedError
+
+  def to_proto(self) -> metadata_pb2.VelocityField:
+    """Creates a protocol buffer holding parameters of the velocity field."""
+    raise NotImplementedError
+
+  def from_proto(self, proto: Any):
+    """Reads a protocol buffer to reconstruct the values of the velocity field.
+
+    Args:
+      proto: Protocol buffer holding the velocity field data.
+    """
+    raise NotImplementedError
+
+
+class ConstantVelocityField(VelocityField):
+  """Implementation of a random, divergence-less constant velocity field.
+
+  To assure that divergence-less condition is satisfied on the boundary,
+  the total length of the grid must be multiple of 2 * pi.
+
+  Attributes:
+    num_terms: Integer number of sin() terms used to initialize random field.
+    max_periods: Integer limit on how many periods fit in 2 * pi domain.
+    amplitudes: ndarray of float amplitudes of sin() terms.
+    x_wavenumbers: ndarray of integer spatial x-frequencies of sin() terms.
+    y_wavenumbers: ndarray of integer spatial y-frequencies of sin() terms.
+    phase_shifts: ndarray of float phase shifts of sin() terms.
+  """
+
+  def __init__(self,
+               rnd_gen: np.random.RandomState,
+               num_terms: int = 0,
+               max_periods: int = 0):
+    """Initializes parameters of the field.
+
+    Args:
+      rnd_gen: Random number generator to use for initialization.
+      num_terms: Number of sin() terms used to initialize random field.
+      max_periods: Limit on how many periods fit in 2 * pi domain.
+    """
+    self.num_terms = num_terms
+    self.max_periods = max_periods
+    self.amplitudes = rnd_gen.random_sample(size=num_terms) * 2. - 1.
+    self.x_wavenumbers = rnd_gen.randint(
+        -max_periods, max_periods + 1, num_terms)
+    self.y_wavenumbers = rnd_gen.randint(
+        -max_periods, max_periods + 1, num_terms)
+    self.phase_shifts = rnd_gen.random_sample(size=num_terms) * np.pi * 2.
+
+  def _evaluate_velocity_field(
+      self,
+      component: VelocityComponent,
+      grid: grids.Grid,
+      shift: Tuple[int, int] = (0, 0),
+      normalize: bool = True
+  ) -> np.ndarray:
+    """Evaluates a requested component of the velocity field on the grid.
+
+    Generates numerical values of the field on the mesh generated by the grid.
+    Shift argument can be used to evaluate the velocity field on the boundary.
+
+    Args:
+      component: Component of the velocity to be evaluated.
+      grid: Grid object defining the mesh on which velocity is evaluated.
+      shift: Number of half-step shifts on the grid along x and y axes.
+      normalize: Boolean specifying whether to normalize the velocity field.
+
+    Returns:
+      Component of the velocity field of shape=[grid.size_x,
+      grid.size_y] and dtype=float64 on a mesh shifted by `shift`.
+
+    Raises:
+      ValueError: Component is not supported, must be x or y.
+    """
+    x, y = grid.get_mesh(shift)
+    velocity_values = np.zeros_like(x)
+    for i in range(self.num_terms):
+      amplitude = self.amplitudes[i]
+      wavenumber_x = self.x_wavenumbers[i]
+      wavenumber_y = self.y_wavenumbers[i]
+      phase = self.phase_shifts[i]
+      if component == VelocityComponent.X:
+        velocity_values += amplitude * wavenumber_y * np.sin(
+            wavenumber_x * x + wavenumber_y * y + phase)
+      elif component == VelocityComponent.Y:
+        velocity_values -= amplitude * wavenumber_x * np.sin(
+            wavenumber_x * x + wavenumber_y * y + phase)
+      else:
+        raise ValueError('component must be one a VelocityComponent enum')
+    if normalize:
+      return velocity_values / self._max_value(grid)
+    else:
+      return velocity_values
+
+  def _max_value(self, grid: grids.Grid) -> float:
+    """Returns a maximum scalar value of the velocity field on a given grid.
+
+    This method is used to normalize the velocity field to be O(1).
+
+    Args:
+      grid: Grid object defining the mesh on which the velocity is evaluated.
+
+    Returns:
+      Upper bound on the value of the velocity field.
+    """
+    v_x = self._evaluate_velocity_field(VelocityComponent.X, grid,
+                                        normalize=False)
+    v_y = self._evaluate_velocity_field(VelocityComponent.Y, grid,
+                                        normalize=False)
+    v = np.sqrt(v_x ** 2 + v_y ** 2)
+    return np.max(v)
+
+  def get_velocity_x(
+      self,
+      t: float,
+      grid: grids.Grid,
+      shift: Tuple[int, int] = (0, 0)
+  ) -> tf.Tensor:
+    """Returns a tensor holding x component of the velocity field.
+
+    Args:
+      t: Time at which to evaluate the velocity fields.
+      grid: Grid object on which the field is evaluated.
+      shift: Number of half-step shifts on the grid along x and y axes.
+
+    Returns:
+      x component of the velocity field as tensor with
+      shape=[grid.size_x, grid.size_y] and dtype=float64.
+    """
+    del t  # constant velocity field is time independent
+    velocity_x = self._evaluate_velocity_field(VelocityComponent.X, grid, shift)
+    return velocity_x
+
+  def get_velocity_y(
+      self,
+      t: float,
+      grid: grids.Grid,
+      shift: Tuple[int, int] = (0, 0)
+  ) -> tf.Tensor:
+    """Returns a tensor holding y component of the velocity field.
+
+    Args:
+      t: Time at which to evaluate the velocity fields.
+      grid: Grid object on which the field is evaluated.
+      shift: Number of half-step shifts on the grid along x and y axes.
+
+    Returns:
+      y component of the velocity field as tensor with
+      shape=[grid.size_x, grid.size_y] and dtype=float64.
+    """
+    del t  # constant velocity field is time independent
+    velocity_y = self._evaluate_velocity_field(VelocityComponent.Y, grid, shift)
+    return velocity_y
+
+  def to_proto(self) -> metadata_pb2.VelocityField:
+    """Creates a protocol buffer holding parameters of the velocity field.
+
+    Returns:
+      Protocol buffer holding parameters of the velocity field.
+    """
+    proto = metadata_pb2.VelocityField(
+        constant_v_field=dict(
+            num_terms=self.num_terms,
+            max_periods=self.max_periods,
+            amplitudes=self.amplitudes.tolist(),
+            x_wavenumbers=self.x_wavenumbers.tolist(),
+            y_wavenumbers=self.y_wavenumbers.tolist(),
+            phase_shifts=self.phase_shifts.tolist()
+        )
+    )
+    return proto
+
+  @classmethod
+  def from_proto(
+      cls,
+      proto: metadata_pb2.ConstantVelocityField
+  ) -> VelocityField:
+    """Creates an instance of a ConstantVelocityField from a protocol buffer.
+
+    Args:
+      proto: Protocol buffer holding constant velocity field data.
+
+    Returns:
+      ConstantVelocityField object initialized from the protocol buffer.
+    """
+    velocity_field = cls(np.random.RandomState(None))
+    velocity_field.num_terms = proto.num_terms
+    velocity_field.max_periods = proto.max_periods
+    velocity_field.amplitudes = np.asarray(proto.amplitudes)
+    velocity_field.x_wavenumbers = np.asarray(proto.x_wavenumbers)
+    velocity_field.y_wavenumbers = np.asarray(proto.y_wavenumbers)
+    velocity_field.phase_shifts = np.asarray(proto.phase_shifts)
+    return velocity_field
+
+  @classmethod
+  def from_seed(
+      cls,
+      num_terms: int = 0,
+      max_periods: int = 0,
+      seed: int = 1
+  ) -> VelocityField:
+    """Creates an instance of a ConstantVelocityField from a random seed.
+
+    Args:
+      num_terms: Number of sin() terms used to initialize random field.
+      max_periods: Limit on how many periods fit in 2 * pi domain.
+      seed: Seed for random number generator.
+
+    Returns:
+      ConstantVelocityField object.
+    """
+    rnd_gen = np.random.RandomState(seed=seed)
+    return cls(rnd_gen, num_terms, max_periods)
+
+
+def velocity_field_from_proto(
+    proto: metadata_pb2.VelocityField) -> VelocityField:
+  """Constructs a VelocityField object from a protocol buffer.
+
+  Args:
+    proto: VelocityField message encoding the instance of a VelocityField.
+
+  Returns:
+    VelocityField object.
+
+  Raises:
+    ValueError: Provided protocol buffer was not recognized, check proto names.
+  """
+  if proto.WhichOneof('v_field') == 'constant_v_field':
+    pb = getattr(proto, proto.WhichOneof('v_field'))
+    return ConstantVelocityField.from_proto(pb)
+  raise ValueError('Velocity field protocol buffer is not recognized')
+
+
