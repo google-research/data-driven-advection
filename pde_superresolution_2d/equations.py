@@ -289,7 +289,7 @@ class AdvectionDiffusion(Equation):
     Returns:
       The value of an appropriate time step.
     """
-    return 0.01 * grid.step
+    return 0.5 * grid.step
 
   def to_tensor(self, state: Dict[states.StateKey, tf.Tensor]) -> tf.Tensor:
     """Compresses a state or a time derivative of a state to a single tensor.
@@ -477,7 +477,7 @@ class ConvectionDiffusion(Equation):
     Returns:
       The value of an appropriate time step.
     """
-    return 0.01 * grid.step
+    return 0.5 * grid.step
 
   def to_tensor(self, state: Dict[states.StateKey, tf.Tensor]) -> tf.Tensor:
     """Compresses a state or a time derivative of a state to a single tensor.

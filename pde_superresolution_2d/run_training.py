@@ -22,14 +22,12 @@ from absl import app
 from absl import flags
 from absl import logging
 import tensorflow.google as tf
+from google3.learning.brain.google.python.estimator import estimator_flags  # pylint: disable=unused-import
 
 from pde_superresolution_2d import training
 from pde_superresolution_2d import utils
 
 
-flags.DEFINE_string(
-    'model_dir', '',
-    'Directory where to save the model.')
 flags.DEFINE_string(
     'train_path', '',
     'Path to the training dataset metadata.')
@@ -58,8 +56,10 @@ def main(unused_argv):
   hparams.parse(FLAGS.hparams)
   hparams.set_hparam('model_dir', FLAGS.model_dir)
   hparams.set_hparam('enable_multi_eval', FLAGS.enable_multi_eval)
+  logging.info('HParams:\n%s', hparams)
 
   hparams_path = os.path.join(FLAGS.model_dir, 'hparams.pbtxt')
+  tf.gfile.MakeDirs(FLAGS.model_dir)
   utils.save_proto(hparams.to_proto(), hparams_path)
 
   training_scheme = training.TRAINING_METHODS[hparams.training_scheme]

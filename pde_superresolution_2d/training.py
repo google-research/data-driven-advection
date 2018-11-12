@@ -78,8 +78,9 @@ def create_hparams(**kwargs: Any) -> tf.contrib.training.HParams:
   """
   hparams = tf.contrib.training.HParams(
       # neural network parameters
-      model_type='stencil_velocity_net',
+      model_type='stencil_net',
       model_equation_type='',
+      model_equation_scheme='FINITE_VOLUME',
       num_layers=4,
       num_filters=36,
       kernel_size=3,
@@ -90,7 +91,7 @@ def create_hparams(**kwargs: Any) -> tf.contrib.training.HParams:
       batch_size=1,
       learning_rates=[3e-4, 4e-5, 3e-6],
       learning_stops=[5000, 15000, 30000],
-      checkpoint_interval=100,
+      checkpoint_interval_secs=300,
       eval_steps=100,
       opt_beta1=0.9,
       opt_beta2=0.99,
@@ -105,7 +106,7 @@ def create_hparams(**kwargs: Any) -> tf.contrib.training.HParams:
       test_meta='',
       # Run parameters
       model_dir='',
-      enable_multi_eval=False
+      enable_multi_eval=False,
   )
   hparams.override_from_dict(kwargs)
   return hparams
@@ -189,8 +190,9 @@ def time_derivative_training_scheme(
     Training spec ready for one-off training.
   """
   hparams = copy.deepcopy(hparams)
-  training_meta = dataset_readers.load_metadata(hparams.training_meta)
-  validation_meta = dataset_readers.load_metadata(hparams.validation_meta)
+  training_meta = dataset_readers.load_metadata(hparams.training_metadata_path)
+  validation_meta = dataset_readers.load_metadata(
+      hparams.validation_metadata_path)
 
   low_res_grid = dataset_readers.get_low_res_grid(training_meta)
   equation = dataset_readers.get_equation(training_meta)
@@ -203,8 +205,8 @@ def time_derivative_training_scheme(
         training_meta.equation, hparams.model_equation_scheme)  # pytype: disable=wrong-arg-types
 
   run_config = tf.estimator.RunConfig(
-      save_summary_steps=hparams.checkpoint_interval,
-      save_checkpoints_steps=hparams.checkpoint_interval)
+      model_dir=hparams.model_dir,
+      save_checkpoints_secs=hparams.checkpoint_interval_secs)
 
   # Define dataset keys required for training.
   state_keys = equation.STATE_KEYS
@@ -293,6 +295,7 @@ def time_derivative_training_scheme(
       loss = loss_normalization * losses.state_mean_loss(
           model_time_derivative, target, state_keys_time_derivative,
           tf.losses.mean_squared_error)
+    tf.summary.scalar('loss', loss)
 
     # Define training mode spec.
     if mode == tf.estimator.ModeKeys.TRAIN:
@@ -311,7 +314,7 @@ def time_derivative_training_scheme(
 
   # Define estimator using the above model_fn
   estimator = tf.estimator.Estimator(model_fn=model_fn,
-                                     model_dir=hparams.model_dir,
+                                     model_dir=run_config.model_dir,
                                      config=run_config)
 
   train_input = functools.partial(build_input_pipeline, metadata=training_meta)
@@ -326,7 +329,7 @@ def time_derivative_training_scheme(
   eval_spec.append(tf.estimator.EvalSpec(name='validation_data',
                                          input_fn=validation_input,
                                          steps=hparams.eval_steps,
-                                         throttle_secs=0))
+                                         throttle_secs=120))
 
   if hparams.enable_multi_eval:
     eval_on_train_input = functools.partial(build_input_pipeline,
@@ -334,7 +337,7 @@ def time_derivative_training_scheme(
     eval_spec.append(tf.estimator.EvalSpec(name='training_data',
                                            input_fn=eval_on_train_input,
                                            steps=hparams.eval_steps,
-                                           throttle_secs=0))
+                                           throttle_secs=120))
 
   return tf.estimator.DistributedTrainingSpec(estimator, train_spec, eval_spec)
 

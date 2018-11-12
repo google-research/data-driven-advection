@@ -217,8 +217,8 @@ class StencilNet(Model):
   """Model that uses neural network to predict spatial derivatives of the state.
 
   This model estimates all requested spatial derivatives using periodic
-  convolutions. It predicts coefficients in stencil basis based on the input
-  concentration only. Input state to the model must contain states.C
+  convolutions. It predicts coefficients in stencil basis based on all input
+  states, which must contain at least states.C.
   """
 
   def __init__(self,
@@ -245,7 +245,7 @@ class StencilNet(Model):
   ) -> tf.Tensor:
     """Builds convolutional network with periodic boundary conditions.
 
-    Uses concentration component of the state as the input for prediction.
+    Uses all components of the state as inputs for prediction.
 
     Args:
       state: State that is used as an input to the network.
@@ -264,20 +264,22 @@ class StencilNet(Model):
     with tf.variable_scope('StencilNet'):
       with tf.variable_scope(utils.component_name(component_key),
                              reuse=tf.AUTO_REUSE):
-        current_layer = state[states.C]
-        current_layer = tf.expand_dims(current_layer, 3)
-        current_layer = current_layer - self.input_shift
-        current_layer = current_layer / self.input_variance
+        normalized_concentration = (
+            (state[states.C] - self.input_shift) / self.input_variance)
+        remaining_states = [v for k, v in state.items() if k != states.C]
+        current_layer = tf.stack(
+            [normalized_concentration] + remaining_states, axis=3)
+
         num_stencil_channels = self.stencil_size ** 2
         for i in range(self.num_layers - 1):
           with tf.variable_scope('conv2d_{}'.format(i)):
             current_layer = layers.nn_conv2d_periodic(
-                current_layer, self.kernel_size, self.num_filters, True,
-                self.activation)
+                current_layer, self.kernel_size, self.num_filters,
+                use_bias=True, activation=self.activation)
         with tf.variable_scope('output_layer'):
           coefficient_predictions = layers.nn_conv2d_periodic(
-              current_layer, self.kernel_size, num_stencil_channels, True,
-              tf.identity)
+              current_layer, self.kernel_size, num_stencil_channels,
+              use_bias=True, activation=tf.identity)
         stencil_tensor = utils.generate_stencil_shift_tensors(
             state[states.C], self.stencil_size, self.stencil_size)
         result = tf.einsum('ijkl,ijkl->ijk',
@@ -462,7 +464,7 @@ class StencilVNet(Model):
     Raises:
       ValueError: Model is not compatible with the equation in the dataset.
     """
-    equation_name = train_metadata.equation.WhichOneof('equation')
+    equation_name = train_metadata.equation.WhichOneof('continuous_equation')
     equation_proto = getattr(train_metadata.equation, equation_name)
     if not hasattr(equation_proto, 'velocity_field'):
       raise ValueError('Model is not compatible with the dataset equation.')
