@@ -19,15 +19,15 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+from pde_superresolution_2d.advection import equations as advection_equations
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import utils
 import tensorflow as tf
 
 from absl.testing import absltest
-
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
-from pde_superresolution_2d import utils
-from pde_superresolution_2d import velocity_fields
 
 
 class RollFiniteDifferenceModelTest(absltest.TestCase):
@@ -56,13 +56,13 @@ class RollFiniteDifferenceModelTest(absltest.TestCase):
   def test_spatial_derivatives(self):
     """Test that finite difference derivatives are close to true derivatives."""
     derivative_keys = (
-        states.C,
-        states.C_X,
-        states.C_XX,
-        states.C_Y,
-        states.C_YY,
-        states.C_X_EDGE_X,
-        states.C_Y_EDGE_Y
+        advection_equations.C,
+        advection_equations.C_X,
+        advection_equations.C_XX,
+        advection_equations.C_Y,
+        advection_equations.C_YY,
+        advection_equations.C_X_EDGE_X,
+        advection_equations.C_Y_EDGE_Y
     )
 
     x, y = self.grid.get_mesh()
@@ -82,21 +82,21 @@ class RollFiniteDifferenceModelTest(absltest.TestCase):
       x_edge_phase = kx * x_shifted_x + ky * x_shifted_y + phi
       y_edge_phase = kx * y_shifted_x + ky * y_shifted_y + phi
 
-      exact_values[states.C] += ampl * np.sin(center_phase)
-      exact_values[states.C_X] += ampl * kx * np.cos(center_phase)
-      exact_values[states.C_Y] += ampl * ky * np.cos(center_phase)
-      exact_values[states.C_XX] -= ampl * kx * kx * np.sin(center_phase)
-      exact_values[states.C_YY] -= ampl * ky * ky * np.sin(center_phase)
-      exact_values[states.C_X_EDGE_X] += ampl * kx * np.cos(x_edge_phase)
-      exact_values[states.C_Y_EDGE_Y] += ampl * ky * np.cos(y_edge_phase)
+      exact_values[advection_equations.C] += ampl * np.sin(center_phase)
+      exact_values[advection_equations.C_X] += ampl * kx * np.cos(center_phase)
+      exact_values[advection_equations.C_Y] += ampl * ky * np.cos(center_phase)
+      exact_values[advection_equations.C_XX] -= ampl * kx * kx * np.sin(center_phase)
+      exact_values[advection_equations.C_YY] -= ampl * ky * ky * np.sin(center_phase)
+      exact_values[advection_equations.C_X_EDGE_X] += ampl * kx * np.cos(x_edge_phase)
+      exact_values[advection_equations.C_Y_EDGE_Y] += ampl * ky * np.cos(y_edge_phase)
 
     for key in exact_values.keys():
       exact_values[key] = np.expand_dims(exact_values[key], axis=0)
 
-    distribution = exact_values[states.C]
+    distribution = exact_values[advection_equations.C]
     with tf.Graph().as_default():
       state_tensor = tf.constant(distribution, dtype=tf.float64)
-      state = {states.C: state_tensor}
+      state = {advection_equations.C: state_tensor}
       spatial_derivatives = self.model.state_derivatives(
           state, 0, self.grid, derivative_keys)
       with tf.Session() as sess:
@@ -113,11 +113,11 @@ class RollFiniteDifferenceModelTest(absltest.TestCase):
       unsupported_key_a = states.StateKey('pressure', (0, 0), (0, 0))
       unsupported_key_b = states.StateKey('concentration', (5, 0), (0, 0))
       unsupported_key_c = states.StateKey('concentration', (1, 0), (1, 0))
-      state = {states.C: state_tensor}
+      state = {advection_equations.C: state_tensor}
       bad_request_a = (unsupported_key_a,)
       bad_request_b = (unsupported_key_b,)
       bad_request_c = (unsupported_key_c,)
-      bad_request_d = (states.C, unsupported_key_c)
+      bad_request_d = (advection_equations.C, unsupported_key_c)
       with self.assertRaises(ValueError):
         self.model.state_derivatives(state, 0, self.grid, bad_request_a)
       with self.assertRaises(ValueError):
@@ -157,8 +157,8 @@ class StencilNetTest(absltest.TestCase):
   def test_network_construction(self):
     """Tests that model generates networks for spatial derivatives."""
     tf.reset_default_graph()
-    input_state = {states.C: np.random.random((1,) + self.grid.get_shape())}
-    request = (states.C_EDGE_X, states.C_EDGE_Y, states.C_XX, states.C_YY)
+    input_state = {advection_equations.C: np.random.random((1,) + self.grid.get_shape())}
+    request = (advection_equations.C_EDGE_X, advection_equations.C_EDGE_Y, advection_equations.C_XX, advection_equations.C_YY)
     derivs = self.model.state_derivatives(input_state, 0., self.grid, request)
     with tf.train.MonitoredSession() as sess:
       derivs_values = sess.run(derivs)
@@ -197,8 +197,8 @@ class StencilVNetTest(absltest.TestCase):
   def test_network_construction(self):
     """Tests that model generates networks for spatial derivatives."""
     tf.reset_default_graph()
-    input_state = {states.C: np.random.random((1,) + self.grid.get_shape())}
-    request = (states.C_EDGE_X, states.C_EDGE_Y, states.C_XX, states.C_YY)
+    input_state = {advection_equations.C: np.random.random((1,) + self.grid.get_shape())}
+    request = (advection_equations.C_EDGE_X, advection_equations.C_EDGE_Y, advection_equations.C_XX, advection_equations.C_YY)
     derivs = self.model.state_derivatives(input_state, 0., self.grid, request)
     with tf.train.MonitoredSession() as sess:
       derivs_values = sess.run(derivs)

@@ -17,14 +17,13 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from google.protobuf import text_format
+from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import states
 import tensorflow as tf
 from tensorflow import gfile
 from typing import Any, List, Tuple
-
-from google.protobuf import text_format
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import states
 
 
 def roll_2d(

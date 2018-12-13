@@ -21,11 +21,11 @@ import numpy as np
 
 from absl.testing import absltest
 
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import grids
 from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import models
-from pde_superresolution_2d import velocity_fields
+from pde_superresolution_2d.advection import equations as advection_equations
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import models
 
 
 class MetadataTest(absltest.TestCase):
@@ -34,7 +34,7 @@ class MetadataTest(absltest.TestCase):
     grid_size = 200
     self.grid = grids.Grid(grid_size, grid_size, 2 * np.pi / grid_size)
     self.v_field = velocity_fields.ConstantVelocityField.from_seed(12, 6, 100)
-    self.equation = equations.FiniteDifferenceAdvectionDiffusion(
+    self.equation = advection_equations.FiniteDifferenceAdvectionDiffusion(
         self.v_field, diffusion_const=0.1)
     self.model = models.RollFiniteDifferenceModel()
     grid_proto = self.grid.to_proto()
@@ -54,7 +54,8 @@ class MetadataTest(absltest.TestCase):
 
   def test_proto_reconstruction(self):
     grid_from_proto = grids.grid_from_proto(self.metadata.high_resolution_grid)
-    equation_from_proto = equations.equation_from_proto(self.metadata.equation)
+    equation_from_proto = advection_equations.equation_from_proto(
+        self.metadata.equation)
     self.assertEqual(grid_from_proto.size_x, self.grid.size_x)
     self.assertEqual(grid_from_proto.size_y, self.grid.size_y)
     self.assertAlmostEqual(grid_from_proto.step, self.grid.step)

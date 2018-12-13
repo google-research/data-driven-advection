@@ -20,7 +20,7 @@ import numpy as np
 
 from absl.testing import absltest
 
-from pde_superresolution_2d import grids
+from pde_superresolution_2d.core import grids
 
 
 class GridTest(absltest.TestCase):

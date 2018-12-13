@@ -26,13 +26,14 @@ import numpy as np
 import tensorflow as tf
 from typing import Callable, Dict, List, Tuple
 
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import graph_builders
-from pde_superresolution_2d import grids
+from pde_superresolution_2d.advection import equations as advection_equations
+from pde_superresolution_2d.core import equations
+from pde_superresolution_2d.core import graph_builders
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import utils
 from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
-from pde_superresolution_2d import utils
 
 
 class TensorFlowDoFn(beam.DoFn):
@@ -245,7 +246,7 @@ def generate_metadata(
 def convert_to_tf_examples(
     dataset_states: Tuple[Dict[states.StateKey, np.ndarray], ...],
     dataset_grids: Tuple[grids.Grid, ...]
-) -> str:
+) -> bytes:
   """Generates serialized tensorflow example holding dataset_states.
 
   Generates tf.Example from the states in dataset_states. The key is generated
@@ -307,7 +308,7 @@ def integrate_states_transform(
       Tuple of input placeholder for the transformation and the tuple of output
       states corresponding to the solution at time slices specified in `times`.
     """
-    placeholder_init = equations.InitialConditionMethod.PLACEHOLDER
+    placeholder_init = advection_equations.InitialConditionMethod.PLACEHOLDER
     input_state = equation.initial_state(placeholder_init, grid)
     return input_state, graph_builders.time_integrate_graph(
         input_state, equation, model, grid, times)
@@ -338,7 +339,7 @@ class Dataset(object):
   def convert_to_tf_examples(
       self,
       input_data: Tuple[Dict[states.StateKey, np.ndarray]]
-  ) -> str:
+  ) -> bytes:
     """Converts input_data to tf.Examples and serializes it."""
     raise NotImplementedError
 
@@ -421,7 +422,7 @@ class TimeDerivativeDataset(Dataset):
         Beam class that computes all of the component of the dataset from
         individual states.
       """
-      placeholder_init = equations.InitialConditionMethod.PLACEHOLDER
+      placeholder_init = advection_equations.InitialConditionMethod.PLACEHOLDER
       state = self.equation.initial_state(placeholder_init, self.high_res_grid)
 
       time_derivative = graph_builders.time_derivative_graph(
@@ -453,7 +454,7 @@ class TimeDerivativeDataset(Dataset):
         input_states: Tuple[Dict[states.StateKey, np.ndarray]]
     ) -> np.ndarray:
       coarse_state_index = 0
-      return input_states[coarse_state_index][states.C].flatten()
+      return input_states[coarse_state_index][advection_equations.C].flatten()
 
     compute_input_statistics_fn = MeanVarianceCombineFn(extract_values)
     return compute_input_statistics_fn
@@ -461,7 +462,7 @@ class TimeDerivativeDataset(Dataset):
   def convert_to_tf_examples(
       self,
       input_data: Tuple[Dict[states.StateKey, np.ndarray]]
-  ) -> str:
+  ) -> bytes:
     """Converts input_data to tf.Examples and serializes it."""
     return convert_to_tf_examples(input_data, self.dataset_grids)
 
@@ -545,7 +546,7 @@ class AllDerivativeDataset(Dataset):
         Beam class that computes all of the component of the dataset from
         individual states.
       """
-      placeholder_init = equations.InitialConditionMethod.PLACEHOLDER
+      placeholder_init = advection_equations.InitialConditionMethod.PLACEHOLDER
       state = self.equation.initial_state(placeholder_init, self.high_res_grid)
       derivatives_request = self.equation.SPATIAL_DERIVATIVES_KEYS
 
@@ -593,7 +594,7 @@ class AllDerivativeDataset(Dataset):
 
     def extract_values(input_states: Tuple[Dict[states.StateKey, np.ndarray]]):
       coarse_state_index = 0
-      return input_states[coarse_state_index][states.C].flatten()
+      return input_states[coarse_state_index][advection_equations.C].flatten()
 
     compute_input_statistics_fn = MeanVarianceCombineFn(extract_values)
     return compute_input_statistics_fn
@@ -601,7 +602,7 @@ class AllDerivativeDataset(Dataset):
   def convert_to_tf_examples(
       self,
       input_data: Tuple[Dict[states.StateKey, np.ndarray]]
-  ) -> str:
+  ) -> bytes:
     """Converts input_data to tf.Examples and serializes it."""
     return convert_to_tf_examples(input_data, self.dataset_grids)
 
@@ -679,7 +680,7 @@ class HighResolutionDataset(Dataset):
 
     def extract_values(input_states: Tuple[Dict[states.StateKey, np.ndarray]]):
       coarse_state_index = 0
-      return input_states[coarse_state_index][states.C].flatten()
+      return input_states[coarse_state_index][advection_equations.C].flatten()
 
     compute_input_statistics_fn = MeanVarianceCombineFn(extract_values)
     return compute_input_statistics_fn
@@ -687,7 +688,7 @@ class HighResolutionDataset(Dataset):
   def convert_to_tf_examples(
       self,
       input_data: Tuple[Dict[states.StateKey, np.ndarray]]
-  ) -> str:
+  ) -> bytes:
     """Converts input_data to tf.Examples and serializes it."""
     return convert_to_tf_examples(input_data, self.dataset_grids)
 

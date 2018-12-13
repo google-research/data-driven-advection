@@ -19,17 +19,16 @@ from __future__ import google_type_annotations
 
 import copy
 import functools
+from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.advection import equations
+from pde_superresolution_2d.core import dataset_readers
+from pde_superresolution_2d.core import graph_builders
+from pde_superresolution_2d.core import losses
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import utils
 import tensorflow.google as tf
 from typing import Any, Dict, Tuple
-
-from pde_superresolution_2d import dataset_readers
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import graph_builders
-from pde_superresolution_2d import losses
-from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
-from pde_superresolution_2d import utils
 
 
 def create_hparams(**kwargs: Any) -> tf.contrib.training.HParams:
@@ -195,7 +194,8 @@ def time_derivative_training_scheme(
       hparams.validation_metadata_path)
 
   low_res_grid = dataset_readers.get_low_res_grid(training_meta)
-  equation = dataset_readers.get_equation(training_meta)
+  # see b/120915509 for why we disable pytype here
+  equation = equations.equation_from_proto(training_meta.equation)  # pytype: disable=wrong-arg-types
   model = models.build_model(hparams, training_meta)
 
   if not hparams.model_equation_type:

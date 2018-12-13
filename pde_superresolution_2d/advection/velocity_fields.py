@@ -20,11 +20,10 @@ from __future__ import print_function
 
 import enum
 import numpy as np
+from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.core import grids
 import tensorflow as tf
 from typing import Any, Tuple
-
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import metadata_pb2
 
 
 class VelocityComponent(enum.Enum):

@@ -47,9 +47,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from pde_superresolution_2d import metadata_pb2
 from typing import Dict, NamedTuple, Tuple, Any
 
-from pde_superresolution_2d import metadata_pb2
+
+BASELINE_PREFIX = 'baseline_'  # prefix for derivatives evaluated on coarse grid
+MODEL_PREFIX = 'model_'  # prefix for states evaluated by the model
+EXACT_PREFFIX = 'exact_'  # prefix for states obtained by coarse-graining
+
 
 StateKey = NamedTuple('StateKey', [('name', str),  # pylint: disable=invalid-name
                                    ('derivative_orders', Tuple[int, int, int]),
@@ -82,37 +87,6 @@ def add_prefix_keys(prefix: str,
                     state: Dict[StateKey, Any]) -> Dict[StateKey, Any]:
   """Returns a state with name field of StateKeys prefixed with prefix."""
   return {add_prefix(prefix, key): value for key, value in state.items()}
-
-C = StateKey('concentration', (0, 0, 0), (0, 0))
-C_EDGE_X = StateKey('concentration', (0, 0, 0), (1, 0))
-C_EDGE_Y = StateKey('concentration', (0, 0, 0), (0, 1))
-C_X = StateKey('concentration', (1, 0, 0), (0, 0))
-C_Y = StateKey('concentration', (0, 1, 0), (0, 0))
-C_T = StateKey('concentration', (0, 0, 1), (0, 0))
-C_X_EDGE_X = StateKey('concentration', (1, 0, 0), (1, 0))
-C_Y_EDGE_Y = StateKey('concentration', (0, 1, 0), (0, 1))
-C_XX = StateKey('concentration', (2, 0, 0), (0, 0))
-C_XY = StateKey('concentration', (1, 1, 0), (0, 0))
-C_YY = StateKey('concentration', (0, 2, 0), (0, 0))
-
-BASELINE_PREFIX = 'baseline_'  # prefix for derivatives evaluated on coarse grid
-MODEL_PREFIX = 'model_'  # prefix for states evaluated by the model
-EXACT_PREFFIX = 'exact_'  # prefix for states obtained by coarse-graining
-
-B_C = add_prefix(BASELINE_PREFIX, C)
-B_C_EDGE_X = add_prefix(BASELINE_PREFIX, C_EDGE_X)
-B_C_EDGE_Y = add_prefix(BASELINE_PREFIX, C_EDGE_Y)
-B_C_X = add_prefix(BASELINE_PREFIX, C_X)
-B_C_Y = add_prefix(BASELINE_PREFIX, C_Y)
-B_C_T = add_prefix(BASELINE_PREFIX, C_T)
-B_C_XX = add_prefix(BASELINE_PREFIX, C_XX)
-B_C_XY = add_prefix(BASELINE_PREFIX, C_XY)
-B_C_YY = add_prefix(BASELINE_PREFIX, C_YY)
-
-VX = StateKey('velocity_x', (0, 0, 0), (0, 0))
-VY = StateKey('velocity_y', (0, 0, 0), (0, 0))
-VX_T = StateKey('velocity_x', (0, 0, 1), (0, 0))
-VY_T = StateKey('velocity_y', (0, 0, 1), (0, 0))
 
 
 def state_key_to_proto(state_key: StateKey):

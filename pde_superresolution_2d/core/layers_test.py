@@ -23,7 +23,7 @@ import tensorflow as tf
 
 from absl.testing import absltest
 
-from pde_superresolution_2d import layers
+from pde_superresolution_2d.core import layers
 
 
 class LayersTest(absltest.TestCase):

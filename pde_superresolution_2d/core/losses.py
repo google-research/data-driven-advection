@@ -21,7 +21,7 @@ from __future__ import google_type_annotations
 import tensorflow as tf
 from typing import Callable, Dict, Tuple
 
-from pde_superresolution_2d import states
+from pde_superresolution_2d.core import states
 
 
 def state_mean_loss(

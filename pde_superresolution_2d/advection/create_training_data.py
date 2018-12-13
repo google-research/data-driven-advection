@@ -23,18 +23,17 @@ from absl import app
 from absl import flags
 import apache_beam as beam
 import numpy as np
-
+from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.advection import equations
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import dataset_builders
+from pde_superresolution_2d.core import equations as core_equations
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
 from typing import Dict, Tuple
 
 from apache_beam import runner
-
-from pde_superresolution_2d import dataset_builders
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
-from pde_superresolution_2d import velocity_fields
 
 
 # files
@@ -80,7 +79,8 @@ flags.DEFINE_integer(
 
 # initial conditions parameters
 flags.DEFINE_enum_class(
-    'initial_conditions_type', 'FOURIER', equations.InitialConditionMethod,
+    'initial_conditions_type', 'FOURIER',
+    equations.InitialConditionMethod,
     'Type of initial conditions to use.')
 flags.DEFINE_integer(
     'num_gaussian_terms', 4,
@@ -188,7 +188,7 @@ def main(_):
 
   def generate_initial_states(
       seed: int,
-      equation: equations.Equation = equation,
+      equation: core_equations.Equation = equation,
       grid: grids.Grid = high_res_grid
   ) -> Tuple[Dict[states.StateKey, np.ndarray]]:
     """Function to be passed to beam.Map to generates initial states."""
@@ -198,7 +198,7 @@ def main(_):
 
   def convert_to_tf_examples(
       inputs: Tuple[Dict[states.StateKey, np.ndarray]]
-  ) -> str:
+  ) -> bytes:
     """Function to be passed to beam.Map to serialize data examples."""
     return dataset_builder.convert_to_tf_examples(inputs)
 

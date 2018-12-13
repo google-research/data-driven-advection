@@ -23,8 +23,11 @@ import tensorflow as tf
 from absl.testing import absltest
 from absl.testing import parameterized
 
-from pde_superresolution_2d import losses
-from pde_superresolution_2d import states
+from pde_superresolution_2d.core import losses
+from pde_superresolution_2d.core import states
+
+
+C = states.StateKey('concentration', (0, 0, 0), (0, 0))
 
 
 class LossesTest(parameterized.TestCase):
@@ -39,17 +42,17 @@ class LossesTest(parameterized.TestCase):
     batch, size = batch_and_size
     with tf.Graph().as_default():
       input_state = {
-          states.C: 2 * tf.ones((batch, size, size), dtype=tf.float64)
+          C: 2 * tf.ones((batch, size, size), dtype=tf.float64)
       }
 
       target_state = {
-          states.C: tf.zeros((batch, size, size), dtype=tf.float64)
+          C: tf.zeros((batch, size, size), dtype=tf.float64)
       }
 
-      l1_loss = losses.state_mean_loss(input_state, target_state, (states.C,),
+      l1_loss = losses.state_mean_loss(input_state, target_state, (C,),
                                        tf.losses.absolute_difference)
 
-      l2_loss = losses.state_mean_loss(input_state, target_state, (states.C,),
+      l2_loss = losses.state_mean_loss(input_state, target_state, (C,),
                                        tf.losses.mean_squared_error)
 
       with tf.Session():
@@ -61,35 +64,35 @@ class LossesTest(parameterized.TestCase):
 
     with tf.Graph().as_default():
       input_state = {
-          states.C: 2 * tf.ones((5, 20, 20), dtype=tf.float64)
+          C: 2 * tf.ones((5, 20, 20), dtype=tf.float64)
       }
 
       target_state = {
-          states.C: tf.zeros((5, 20, 20), dtype=tf.float64)
+          C: tf.zeros((5, 20, 20), dtype=tf.float64)
       }
 
       small_ref_state = {
-          states.C: tf.ones((5, 20, 20), dtype=tf.float64)
+          C: tf.ones((5, 20, 20), dtype=tf.float64)
       }
       large_ref_state = {
-          states.C: 3 * tf.ones((5, 20, 20), dtype=tf.float64)
+          C: 3 * tf.ones((5, 20, 20), dtype=tf.float64)
       }
 
       l1_loss_s = losses.state_weighted_mean_loss(
           input_state, target_state, small_ref_state,
-          (states.C,), tf.losses.absolute_difference)
+          (C,), tf.losses.absolute_difference)
 
       l1_loss_l = losses.state_weighted_mean_loss(
           input_state, target_state, large_ref_state,
-          (states.C,), tf.losses.absolute_difference)
+          (C,), tf.losses.absolute_difference)
 
       l2_loss_s = losses.state_weighted_mean_loss(
           input_state, target_state, small_ref_state,
-          (states.C,), tf.losses.mean_squared_error)
+          (C,), tf.losses.mean_squared_error)
 
       l2_loss_l = losses.state_weighted_mean_loss(
           input_state, target_state, large_ref_state,
-          (states.C,), tf.losses.mean_squared_error)
+          (C,), tf.losses.mean_squared_error)
 
       with tf.Session():
         # Losses = (2 / (0.1 * 2 + 1)) * 2 and (4 / (0.1 * 4 + 1)) * 4

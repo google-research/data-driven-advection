@@ -28,12 +28,11 @@ from typing import Dict, Tuple
 
 from google.protobuf import text_format
 from tensorflow import gfile
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import grids
+from pde_superresolution_2d.core import grids
 from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
-from pde_superresolution_2d import utils
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import utils
 
 
 def initialize_dataset(
@@ -163,8 +162,3 @@ def get_high_res_grid(metadata: metadata_pb2.Dataset) -> grids.Grid:
 def get_baseline_model(metadata: metadata_pb2.Dataset) -> models.Model:
   """Reconstructs the model used to generate dataset."""
   return models.model_from_proto(metadata.model)  # pytype: disable=wrong-arg-types
-
-
-def get_equation(metadata: metadata_pb2.Dataset) -> equations.Equation:
-  """Reconstructs the equation used to generate the dataset."""
-  return equations.equation_from_proto(metadata.equation)  # pytype: disable=wrong-arg-types

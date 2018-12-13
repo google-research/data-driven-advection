@@ -21,11 +21,10 @@ import os.path
 from absl import app
 from absl import flags
 from absl import logging
+from pde_superresolution_2d.advection import training
+from pde_superresolution_2d.core import utils
 import tensorflow.google as tf
 from google3.learning.brain.google.python.estimator import estimator_flags  # pylint: disable=unused-import
-
-from pde_superresolution_2d import training
-from pde_superresolution_2d import utils
 
 
 flags.DEFINE_string(

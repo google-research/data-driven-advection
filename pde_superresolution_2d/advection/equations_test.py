@@ -17,21 +17,20 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.advection import equations
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import equations as core_equations
+from pde_superresolution_2d.core import grids
 import tensorflow as tf
 
 from absl.testing import absltest
-
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import velocity_fields
-
 
 # TODO(dkochkov) update initialization and bring back boundary test.
 
 
 def _test_initial_conditions_shape(
-    equation: equations.Equation,
+    equation: core_equations.Equation,
     init_method: equations.InitialConditionMethod,
     grid: grids.Grid,
     batch_size: int,
@@ -44,7 +43,7 @@ def _test_initial_conditions_shape(
                             grid.get_shape())
 
 
-def _test_tensor_state_conversion(equation: equations.Equation,
+def _test_tensor_state_conversion(equation: core_equations.Equation,
                                   grid: grids.Grid):
   """Test that tensor->state and state->tensor commute."""
   state = equation.initial_state(
@@ -57,7 +56,7 @@ def _test_tensor_state_conversion(equation: equations.Equation,
     np.testing.assert_allclose(state[key], back_to_state[key])
 
 
-def _test_tensor_state_conversion_tf(equation: equations.Equation,
+def _test_tensor_state_conversion_tf(equation: core_equations.Equation,
                                      grid: grids.Grid):
   """Test that tensor->state and state->tensor commute."""
   state = equation.initial_state(
@@ -88,11 +87,14 @@ class EquationsTest(absltest.TestCase):
     upwind_advection = equations.EQUATION_TYPES[upwind_key]
 
     self.assertEqual(
-        finite_diff_advection, equations.FiniteDifferenceAdvectionDiffusion)
+        finite_diff_advection,
+        equations.FiniteDifferenceAdvectionDiffusion)
     self.assertEqual(
-        finite_volume_advection, equations.FiniteVolumeAdvectionDiffusion)
+        finite_volume_advection,
+        equations.FiniteVolumeAdvectionDiffusion)
     self.assertEqual(
-        upwind_advection, equations.FiniteVolumeUpwindAdvectionDiffusion)
+        upwind_advection,
+        equations.FiniteVolumeUpwindAdvectionDiffusion)
 
 
 class FiniteDifferenceAdvectionTest(absltest.TestCase):
@@ -119,7 +121,8 @@ class FiniteDifferenceAdvectionTest(absltest.TestCase):
     equation_proto = self.equation.to_proto()
     proto = equation_proto.advection_diffusion
     self.assertEqual(proto.diffusion_const, self.equation.diffusion_const)
-    equation_from_proto = equations.equation_from_proto(equation_proto)
+    equation_from_proto = equations.equation_from_proto(
+        equation_proto)
     np.testing.assert_allclose(
         equation_from_proto.velocity_field.get_velocity_x(0, self.grid),
         self.equation.velocity_field.get_velocity_x(0, self.grid))
@@ -152,7 +155,8 @@ class FiniteVolumeAdvectionTest(absltest.TestCase):
     equation_proto = self.equation.to_proto()
     proto = equation_proto.advection_diffusion
     self.assertEqual(proto.diffusion_const, self.equation.diffusion_const)
-    equation_from_proto = equations.equation_from_proto(equation_proto)
+    equation_from_proto = equations.equation_from_proto(
+        equation_proto)
     np.testing.assert_allclose(
         equation_from_proto.velocity_field.get_velocity_x(0, self.grid),
         self.equation.velocity_field.get_velocity_x(0, self.grid))
@@ -185,7 +189,8 @@ class UpwindAdvectionTest(absltest.TestCase):
     equation_proto = self.equation.to_proto()
     proto = equation_proto.advection_diffusion
     self.assertEqual(proto.diffusion_const, self.equation.diffusion_const)
-    equation_from_proto = equations.equation_from_proto(equation_proto)
+    equation_from_proto = equations.equation_from_proto(
+        equation_proto)
     np.testing.assert_allclose(
         equation_from_proto.velocity_field.get_velocity_x(0, self.grid),
         self.equation.velocity_field.get_velocity_x(0, self.grid))
@@ -217,7 +222,8 @@ class InStateVelocityFiniteVolumeAdvectionTest(absltest.TestCase):
     equation_proto = self.equation.to_proto()
     proto = equation_proto.in_state_velocity_advection_diffusion
     self.assertEqual(proto.diffusion_const, self.equation.diffusion_const)
-    equation_from_proto = equations.equation_from_proto(equation_proto)
+    equation_from_proto = equations.equation_from_proto(
+        equation_proto)
     self.assertIsInstance(
         equation_from_proto,
         equations.InStateVelocityFiniteVolumeAdvectionDiffusion)
@@ -246,7 +252,8 @@ class InStateVelocityUpwindAdvectionTest(absltest.TestCase):
     equation_proto = self.equation.to_proto()
     proto = equation_proto.in_state_velocity_advection_diffusion
     self.assertEqual(proto.diffusion_const, self.equation.diffusion_const)
-    equation_from_proto = equations.equation_from_proto(equation_proto)
+    equation_from_proto = equations.equation_from_proto(
+        equation_proto)
     self.assertIsInstance(
         equation_from_proto,
         equations.InStateVelocityUpwindAdvectionDiffusion)

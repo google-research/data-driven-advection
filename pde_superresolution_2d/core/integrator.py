@@ -26,10 +26,10 @@ import numpy as np
 import tensorflow as tf
 from typing import Dict, Tuple
 
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
+from pde_superresolution_2d.core import equations
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
 
 
 class Integrator(object):

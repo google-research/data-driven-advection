@@ -26,12 +26,13 @@ import tensorflow as tf
 
 from tensorflow import gfile
 from absl.testing import absltest
-from pde_superresolution_2d import create_training_data
-from pde_superresolution_2d import dataset_readers
-from pde_superresolution_2d import equations
+from pde_superresolution_2d.advection import equations as advection_equations
+from pde_superresolution_2d.advection import create_training_data
+from pde_superresolution_2d.core import dataset_readers
+from pde_superresolution_2d.core import equations
 from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
 
 
 FLAGS = flags.FLAGS
@@ -54,7 +55,7 @@ class WriteReadDataTest(absltest.TestCase):
     diffusion_const = 0.3
 
     scheme = metadata_pb2.Equation.DiscretizationScheme.Value(equation_scheme)
-    expected_equation_type = equations.EQUATION_TYPES[
+    expected_equation_type = advection_equations.EQUATION_TYPES[
         (equation_name, scheme)]
 
     # create a temporary dataset
@@ -80,7 +81,8 @@ class WriteReadDataTest(absltest.TestCase):
     dataset_metadata = dataset_readers.load_metadata(metadata_path)
     low_res_grid = dataset_readers.get_low_res_grid(dataset_metadata)
     high_res_grid = dataset_readers.get_high_res_grid(dataset_metadata)
-    equation = dataset_readers.get_equation(dataset_metadata)
+    equation = advection_equations.equation_from_proto(
+        dataset_metadata.equation)
     baseline_model = dataset_readers.get_baseline_model(dataset_metadata)
 
     self.assertEqual(low_res_grid.size_x, low_resolution)
@@ -92,8 +94,8 @@ class WriteReadDataTest(absltest.TestCase):
     self.assertIsInstance(equation, expected_equation_type)
     self.assertIsInstance(baseline_model, models.MODEL_TYPES[model_type])
 
-    valid_data_keys = ((states.C,), (states.C_EDGE_X, states.C_Y_EDGE_Y))
-    invalid_data_keys = ((states.C, states.C_X), (states.C_EDGE_X,))
+    valid_data_keys = ((advection_equations.C,), (advection_equations.C_EDGE_X, advection_equations.C_Y_EDGE_Y))
+    invalid_data_keys = ((advection_equations.C, advection_equations.C_X), (advection_equations.C_EDGE_X,))
     valid_data_grids = (low_res_grid, low_res_grid)
     invalid_data_grids = (low_res_grid, high_res_grid)
 
@@ -157,7 +159,7 @@ class WriteReadDataTest(absltest.TestCase):
     dataset_metadata = dataset_readers.load_metadata(metadata_path)
     low_res_grid = dataset_readers.get_low_res_grid(dataset_metadata)
 
-    data_keys = ((states.C,),)
+    data_keys = ((advection_equations.C,),)
     data_grids = (low_res_grid,)
 
     dataset = dataset_readers.initialize_dataset(
@@ -175,7 +177,7 @@ class WriteReadDataTest(absltest.TestCase):
       sess.run(iterator_initializer)
       try:
         while True:
-          all_data.append(sess.run(state[0][states.C]).flatten())
+          all_data.append(sess.run(state[0][advection_equations.C]).flatten())
       except tf.errors.OutOfRangeError:
         all_data = np.concatenate(all_data)
 

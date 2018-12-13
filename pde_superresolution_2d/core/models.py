@@ -23,15 +23,15 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.advection import equations as advection_equations
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import layers
+from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import utils
 import tensorflow as tf
 from typing import Callable, Dict, Tuple
-
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import layers
-from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import states
-from pde_superresolution_2d import utils
-from pde_superresolution_2d import velocity_fields
 
 
 class Model(object):
@@ -218,7 +218,7 @@ class StencilNet(Model):
 
   This model estimates all requested spatial derivatives using periodic
   convolutions. It predicts coefficients in stencil basis based on all input
-  states, which must contain at least states.C.
+  states, which must contain at least advection_equations.C.
   """
 
   def __init__(self,
@@ -258,15 +258,17 @@ class StencilNet(Model):
     Raises:
       ValueError: Concentration is not found in state components.
     """
-    if states.C not in state.keys():
+    if advection_equations.C not in state.keys():
       raise ValueError('Concentration is not found in state components.')
 
     with tf.variable_scope('StencilNet'):
       with tf.variable_scope(utils.component_name(component_key),
                              reuse=tf.AUTO_REUSE):
         normalized_concentration = (
-            (state[states.C] - self.input_shift) / self.input_variance)
-        remaining_states = [v for k, v in state.items() if k != states.C]
+            (state[advection_equations.C] - self.input_shift)
+            / self.input_variance)
+        remaining_states = [v for k, v in state.items()
+                            if k != advection_equations.C]
         current_layer = tf.stack(
             [normalized_concentration] + remaining_states, axis=3)
 
@@ -281,7 +283,7 @@ class StencilNet(Model):
               current_layer, self.kernel_size, num_stencil_channels,
               use_bias=True, activation=tf.identity)
         stencil_tensor = utils.generate_stencil_shift_tensors(
-            state[states.C], self.stencil_size, self.stencil_size)
+            state[advection_equations.C], self.stencil_size, self.stencil_size)
         result = tf.einsum('ijkl,ijkl->ijk',
                            coefficient_predictions, stencil_tensor)
     return result
@@ -388,7 +390,7 @@ class StencilVNet(Model):
     Raises:
       ValueError: Concentration is not found in state components.
     """
-    if states.C not in state.keys():
+    if advection_equations.C not in state.keys():
       raise ValueError('Concentration is not found in state components.')
 
     with tf.variable_scope('StencilVNet'):
@@ -398,7 +400,7 @@ class StencilVNet(Model):
             self.velocity_field.get_velocity_x(0., self.grid)), axis=0)
         velocity_y = tf.expand_dims(tf.convert_to_tensor(
             self.velocity_field.get_velocity_y(0., self.grid)), axis=0)
-        current_layer = state[states.C] - self.input_shift
+        current_layer = state[advection_equations.C] - self.input_shift
         current_layer = current_layer / self.input_variance
         current_layer = tf.stack(
             [current_layer, velocity_x, velocity_y], axis=3)
@@ -413,7 +415,7 @@ class StencilVNet(Model):
               current_layer, self.kernel_size, num_stencil_channels, True,
               tf.identity)
         stencil_tensor = utils.generate_stencil_shift_tensors(
-            state[states.C], self.stencil_size, self.stencil_size)
+            state[advection_equations.C], self.stencil_size, self.stencil_size)
         result = tf.einsum('ijkl,ijkl->ijk',
                            coefficient_predictions, stencil_tensor)
     return result

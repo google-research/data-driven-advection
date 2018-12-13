@@ -23,11 +23,12 @@ import tensorflow as tf
 
 from absl.testing import absltest
 
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import integrator
-from pde_superresolution_2d import models
-from pde_superresolution_2d import velocity_fields
+from pde_superresolution_2d.advection import equations as advection_equations
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import equations
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import integrator
+from pde_superresolution_2d.core import models
 
 
 class IntegratorTest(absltest.TestCase):
@@ -37,9 +38,10 @@ class IntegratorTest(absltest.TestCase):
     grid_size = 200
     self.grid = grids.Grid(grid_size, grid_size, 2 * np.pi / grid_size)
     v_field = velocity_fields.ConstantVelocityField.from_seed(12, 6, 100)
-    self.finite_vol_eq = equations.FiniteVolumeAdvectionDiffusion(v_field, 0.1)
-    self.finite_diff_eq = equations.FiniteDifferenceAdvectionDiffusion(v_field,
-                                                                       0.1)
+    self.finite_vol_eq = advection_equations.FiniteVolumeAdvectionDiffusion(
+        v_field, 0.1)
+    self.finite_diff_eq = advection_equations.FiniteDifferenceAdvectionDiffusion(
+        v_field, 0.1)
     self.base_model = models.RollFiniteDifferenceModel()
 
   def _integrate(
@@ -52,7 +54,7 @@ class IntegratorTest(absltest.TestCase):
     solver = integrator.Integrator(equation, model, grid)
     with tf.Graph().as_default():
       init_state = equation.initial_state(
-          equations.InitialConditionMethod.GAUSSIAN, grid, seed=1)
+          advection_equations.InitialConditionMethod.GAUSSIAN, grid, seed=1)
       evolved_states = solver.integrate_tf(init_state, times)
 
       with tf.Session() as sess:

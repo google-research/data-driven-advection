@@ -21,10 +21,9 @@ import os.path
 
 from absl import flags
 from absl.testing import flagsaver
-
+from pde_superresolution_2d.advection import create_training_data
 from tensorflow import gfile
 from absl.testing import absltest
-from pde_superresolution_2d import create_training_data
 
 
 FLAGS = flags.FLAGS

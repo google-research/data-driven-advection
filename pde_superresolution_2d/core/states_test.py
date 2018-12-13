@@ -19,9 +19,8 @@ from __future__ import print_function
 
 import numpy as np
 
+from pde_superresolution_2d.core import states
 from absl.testing import absltest
-
-from pde_superresolution_2d import states
 
 
 class StatesTest(absltest.TestCase):

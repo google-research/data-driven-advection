@@ -19,16 +19,15 @@ from __future__ import print_function
 
 import copy
 import numpy as np
+from pde_superresolution_2d.advection import equations
+from pde_superresolution_2d.core import dataset_readers
+from pde_superresolution_2d.core import graph_builders
+from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import utils
 import tensorflow as tf
 from typing import Dict, Tuple, Any
 import xarray as xr
-
-from pde_superresolution_2d import dataset_readers
-from pde_superresolution_2d import equations
-from pde_superresolution_2d import graph_builders
-from pde_superresolution_2d import models
-from pde_superresolution_2d import states
-from pde_superresolution_2d import utils
 
 
 # output sample axis names per entry
@@ -115,7 +114,8 @@ def integration_metrics(
 
   high_res_grid = dataset_readers.get_high_res_grid(training_meta)
   low_res_grid = dataset_readers.get_low_res_grid(training_meta)
-  equation = dataset_readers.get_equation(training_meta)
+  # see b/120915509 for why we disable pytype here
+  equation = equations.equation_from_proto(training_meta.equation)  # pytype: disable=wrong-arg-types
   baseline_model = dataset_readers.get_baseline_model(training_meta)
   model = models.build_model(hparams, training_meta)
 
@@ -157,7 +157,7 @@ def integration_metrics(
     state_metrics = states_metrics(model_low_res_integrated_states,
                                    baseline_low_res_integrated_states,
                                    exact_low_res_integrated_states,
-                                   (states.C,))
+                                   (equations.C,))
 
     init = tf.global_variables_initializer()
     init_l = tf.local_variables_initializer()

@@ -20,8 +20,8 @@ import numpy as np
 
 from absl.testing import absltest
 
-from pde_superresolution_2d import grids
-from pde_superresolution_2d import velocity_fields
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import grids
 
 
 class ConstantVelocityFieldTest(absltest.TestCase):

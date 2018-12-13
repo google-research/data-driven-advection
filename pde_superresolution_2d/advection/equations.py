@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Equation classes describe differential equations.
-
-Equation class encapsulate the relation between the spatial state derivatives
-and time derivatives for different PDE. State derivatives can be used
-combined differently to yield various update schemes. (e.g. finite differences
-vs finite volumes).
+"""Advection diffussion equations.
 """
 
 from __future__ import absolute_import
@@ -26,14 +21,32 @@ from __future__ import print_function
 
 import enum
 import numpy as np
-import tensorflow as tf
-from typing import Dict, Tuple, Any
-
-from pde_superresolution_2d import grids
 from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d import states
-from pde_superresolution_2d import utils
-from pde_superresolution_2d import velocity_fields
+from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d.core import equations
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import utils
+import tensorflow as tf
+from typing import Dict, Any
+
+
+C = states.StateKey('concentration', (0, 0, 0), (0, 0))
+C_EDGE_X = states.StateKey('concentration', (0, 0, 0), (1, 0))
+C_EDGE_Y = states.StateKey('concentration', (0, 0, 0), (0, 1))
+C_X = states.StateKey('concentration', (1, 0, 0), (0, 0))
+C_Y = states.StateKey('concentration', (0, 1, 0), (0, 0))
+C_T = states.StateKey('concentration', (0, 0, 1), (0, 0))
+C_X_EDGE_X = states.StateKey('concentration', (1, 0, 0), (1, 0))
+C_Y_EDGE_Y = states.StateKey('concentration', (0, 1, 0), (0, 1))
+C_XX = states.StateKey('concentration', (2, 0, 0), (0, 0))
+C_XY = states.StateKey('concentration', (1, 1, 0), (0, 0))
+C_YY = states.StateKey('concentration', (0, 2, 0), (0, 0))
+
+VX = states.StateKey('velocity_x', (0, 0, 0), (0, 0))
+VY = states.StateKey('velocity_y', (0, 0, 0), (0, 0))
+VX_T = states.StateKey('velocity_x', (0, 0, 1), (0, 0))
+VY_T = states.StateKey('velocity_y', (0, 0, 1), (0, 0))
 
 
 class InitialConditionMethod(enum.Enum):
@@ -44,149 +57,13 @@ class InitialConditionMethod(enum.Enum):
   PLACEHOLDER = 'PLACEHOLDER'
 
 
-class Equation(object):
-  """"Base class for PDEs.
-
-  Defines method time_derivative that constructs time derivative of the
-  current state using state derivatives provided by the model. The aim is
-  to be able to use multiple models and the same integrator for uniform
-  performance comparison and experimentation.
-
-  Attributes:
-    State_KEYS: A tuple of StateKeys that represent the content of a state.
-    SPATIAL_DERIVATIVES_KEYS: A tuple of StateKeys that specifies requested
-      spatial derivatives.
-  """
-
-  STATE_KEYS = ...  # type: Tuple[states.StateKey, ...]
-  SPATIAL_DERIVATIVES_KEYS = ...  # type: Tuple[states.StateKey, ...]
-
-  def time_derivative(
-      self,
-      state: Dict[states.StateKey, tf.Tensor],
-      t: float,
-      grid: grids.Grid,
-      spatial_derivatives: Dict[states.StateKey, tf.Tensor]
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns time derivative of the given state.
-
-    Computes time derivatives of the state described by PDE using
-    provided spatial derivatives.
-
-    Args:
-      state: Current state of the solution at time t.
-      t: Time at which to evaluate time derivatives.
-      grid: Grid object holding discretization parameters.
-      spatial_derivatives: Requested spatial derivatives.
-
-    Returns:
-      Time derivative of the state.
-    """
-    raise NotImplementedError
-
-  def initial_state(
-      self,
-      init_type: InitialConditionMethod,
-      grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns a state with fully parametrized initial conditions.
-
-    Generates initial conditions of `init_type`. All parameters of
-    initialization will be overridden with values from `kwargs`.
-    (e.g. position of the gaussian for InitialConditionMethods.GAUSSIAN is
-    given by x_position and y_position arguments.) The intended use of this
-    method is for testing evaluation on particular initial values. To generate
-    random ensemble of initial conditions use initial_random_state.
-
-    Args:
-      init_type: Initialization method, must be one of the
-          InitialConditionMethods.
-      grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Arguments to be passed to initialization methods.
-
-    Returns:
-      State with initial values.
-    """
-    raise NotImplementedError
-
-  def initial_random_state(
-      self,
-      seed: int,
-      init_type: InitialConditionMethod,
-      grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns a state with random initial conditions.
-
-    Generates an initial state with values from an ensemble defined by
-    `init_type`. Parameters of the distribution can be modified by providing
-    override values in `kwargs`. Intended for generation of training data and
-    large validation datasets.
-
-    Args:
-      seed: Random seed to use for random number generator.
-      init_type: Initialization method, must be one of the
-          InitialConditionMethods.
-      grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Arguments to be passed to initialization methods.
-
-    Returns:
-      State with initial values.
-    """
-    raise NotImplementedError
-
-  def get_time_step(self, grid: grids.Grid) -> float:
-    """Returns appropriate time step for time marching the equation on grid.
-
-    Equation should implement custom logic for choosing the appropriate dt.
-
-    Args:
-      grid: Grid object holding discretization parameters.
-
-    Returns:
-      The value of an appropriate time step.
-    """
-    raise NotImplementedError
-
-  def to_tensor(self, state: Dict[states.StateKey, tf.Tensor]) -> tf.Tensor:
-    """Compresses a state to a single tensor.
-
-    Args:
-      state: State to be converted to a tensor.
-
-    Returns:
-      A tensor holding information about the state.
-    """
-    raise NotImplementedError
-
-  def to_state(self, tensor: tf.Tensor) -> Dict[states.StateKey, tf.Tensor]:
-    """Decompresses a tensor into a state.
-
-    Args:
-      tensor: A tensor representing the state.
-
-    Returns:
-      A state holding information stored in tensor.
-    """
-    raise NotImplementedError
-
-  def to_proto(self):
-    """Creates a protocol buffer holding parameters of the equation."""
-    raise NotImplementedError
-
-
-class AdvectionDiffusion(Equation):
+class AdvectionDiffusion(equations.Equation):
   """Base class for advection diffusion equations.
 
   Advection diffusion equation defines the state and common methods. Specific
   implementation must provide time_derivative() and to_proto() methods.
   """
-  STATE_KEYS = (states.C,)
+  STATE_KEYS = (C,)
 
   def __init__(self,
                velocity_field: velocity_fields.VelocityField,
@@ -221,12 +98,12 @@ class AdvectionDiffusion(Equation):
     state = {}
     if init_type == InitialConditionMethod.PLACEHOLDER:
       state_shape = (batch_size, grid.size_x, grid.size_y)
-      state[states.C] = tf.placeholder(tf.float64, shape=state_shape)
+      state[C] = tf.placeholder(tf.float64, shape=state_shape)
     elif init_type == InitialConditionMethod.GAUSSIAN:
-      state[states.C] = generate_gaussian(
+      state[C] = generate_gaussian(
           batch_size, grid, **kwargs)
     elif init_type == InitialConditionMethod.FOURIER:
-      state[states.C] = generate_fourier_terms(
+      state[C] = generate_fourier_terms(
           batch_size, grid, **kwargs)
     else:
       raise ValueError('Given initialization method is not supported')
@@ -262,17 +139,17 @@ class AdvectionDiffusion(Equation):
 
     state = {}
     if init_type == InitialConditionMethod.GAUSSIAN:
-      state[states.C] = generate_random_gaussians(
+      state[C] = generate_random_gaussians(
           batch_size, rnd_gen, grid, **kwargs)
     elif init_type == InitialConditionMethod.FOURIER:
-      state[states.C] = generate_random_fourier_terms(
+      state[C] = generate_random_fourier_terms(
           batch_size, rnd_gen, grid, **kwargs)
     elif init_type == InitialConditionMethod.GAUSS_AND_FOURIER:
       if seed % 2 == 0:
-        state[states.C] = generate_random_fourier_terms(
+        state[C] = generate_random_fourier_terms(
             batch_size, rnd_gen, grid, **kwargs)
       else:
-        state[states.C] = generate_random_gaussians(
+        state[C] = generate_random_gaussians(
             batch_size, rnd_gen, grid, **kwargs)
     else:
       raise ValueError('Given initialization method is not supported')
@@ -303,10 +180,10 @@ class AdvectionDiffusion(Equation):
     Raises:
       ValueError: If state is not a state or a state derivative.
     """
-    if set(state.keys()) == set((states.C,)):
-      return state[states.C]
-    elif set(state.keys()) == set((states.C_T,)):
-      return state[states.C_T]
+    if set(state.keys()) == set((C,)):
+      return state[C]
+    elif set(state.keys()) == set((C_T,)):
+      return state[C_T]
     else:
       raise ValueError('Input state is not convertible to a tensor')
 
@@ -319,13 +196,13 @@ class AdvectionDiffusion(Equation):
     Returns:
       A state holding information stored in tensor.
     """
-    return {states.C: tensor}
+    return {C: tensor}
 
   @classmethod
   def from_proto(
       cls,
       proto: metadata_pb2.AdvectionDiffusionEquation
-  ) -> Equation:
+  ) -> equations.Equation:
     """Creates a class instance from protocol buffer.
 
     Args:
@@ -340,7 +217,7 @@ class AdvectionDiffusion(Equation):
     return cls(velocity_field, diffusion_const)
 
 
-class ConvectionDiffusion(Equation):
+class ConvectionDiffusion(equations.Equation):
   """Base class for convection diffusion equations.
 
   Convection diffusion equation defines the state and common methods. Specific
@@ -348,7 +225,7 @@ class ConvectionDiffusion(Equation):
   implementations can focus on constant velocity field, which effectively
   represent the advection-diffusion equation, those should be named accordingly.
   """
-  STATE_KEYS = (states.C, states.VX, states.VY)
+  STATE_KEYS = (C, VX, VY)
 
   def __init__(self, diffusion_const: float):
     self.diffusion_const = diffusion_const
@@ -389,22 +266,22 @@ class ConvectionDiffusion(Equation):
     state = {}
     if init_type == InitialConditionMethod.PLACEHOLDER:
       state_shape = (batch_size, grid.size_x, grid.size_y)
-      state[states.C] = tf.placeholder(tf.float64, shape=state_shape)
-      state[states.VX] = tf.placeholder(tf.float64, shape=state_shape)
-      state[states.VY] = tf.placeholder(tf.float64, shape=state_shape)
+      state[C] = tf.placeholder(tf.float64, shape=state_shape)
+      state[VX] = tf.placeholder(tf.float64, shape=state_shape)
+      state[VY] = tf.placeholder(tf.float64, shape=state_shape)
     elif init_type == InitialConditionMethod.GAUSSIAN:
-      state[states.C] = generate_gaussian(
+      state[C] = generate_gaussian(
           batch_size, grid, **kwargs)
-      state[states.VX] = np.tile(v_field.get_velocity_x(
+      state[VX] = np.tile(v_field.get_velocity_x(
           **vx_arg), velocity_tile_param)
-      state[states.VY] = np.tile(v_field.get_velocity_y(
+      state[VY] = np.tile(v_field.get_velocity_y(
           **vy_arg), velocity_tile_param)
     elif init_type == InitialConditionMethod.FOURIER:
-      state[states.C] = generate_fourier_terms(
+      state[C] = generate_fourier_terms(
           batch_size, grid, **kwargs)
-      state[states.VX] = np.tile(v_field.get_velocity_x(
+      state[VX] = np.tile(v_field.get_velocity_x(
           **vx_arg), velocity_tile_param)
-      state[states.VY] = np.tile(v_field.get_velocity_y(
+      state[VY] = np.tile(v_field.get_velocity_y(
           **vy_arg), velocity_tile_param)
     else:
       raise ValueError('Given initialization method is not supported')
@@ -445,22 +322,22 @@ class ConvectionDiffusion(Equation):
     vy_arg = {'t': 0., 'grid': grid, 'shift': (0, 1)}  # evaluated on y edge
 
     state = {}
-    state[states.VX] = np.tile(v_field.get_velocity_x(
+    state[VX] = np.tile(v_field.get_velocity_x(
         **vx_arg), (batch_size, 1, 1))
-    state[states.VY] = np.tile(v_field.get_velocity_y(
+    state[VY] = np.tile(v_field.get_velocity_y(
         **vy_arg), (batch_size, 1, 1))
     if init_type == InitialConditionMethod.GAUSSIAN:
-      state[states.C] = generate_random_gaussians(
+      state[C] = generate_random_gaussians(
           batch_size, rnd_gen, grid, **kwargs)
     elif init_type == InitialConditionMethod.FOURIER:
-      state[states.C] = generate_random_fourier_terms(
+      state[C] = generate_random_fourier_terms(
           batch_size, rnd_gen, grid, **kwargs)
     elif init_type == InitialConditionMethod.GAUSS_AND_FOURIER:
       if seed % 2 == 0:
-        state[states.C] = generate_random_fourier_terms(
+        state[C] = generate_random_fourier_terms(
             batch_size, rnd_gen, grid, **kwargs)
       else:
-        state[states.C] = generate_random_gaussians(
+        state[C] = generate_random_gaussians(
             batch_size, rnd_gen, grid, **kwargs)
     else:
       raise ValueError('Given initialization method is not supported')
@@ -491,12 +368,12 @@ class ConvectionDiffusion(Equation):
     Raises:
       ValueError: If state is not a state or a state derivative.
     """
-    if set(state.keys()) == set((states.C, states.VX, states.VY)):
+    if set(state.keys()) == set((C, VX, VY)):
       return tf.stack(
-          [state[states.C], state[states.VX], state[states.VY]], axis=3)
-    elif set(state.keys()) == set((states.C_T, states.VX_T, states.VY_T)):
+          [state[C], state[VX], state[VY]], axis=3)
+    elif set(state.keys()) == set((C_T, VX_T, VY_T)):
       return tf.stack(
-          [state[states.C_T], state[states.VX_T], state[states.VY_T]], axis=3)
+          [state[C_T], state[VX_T], state[VY_T]], axis=3)
     else:
       raise ValueError('Input state is not convertible to a tensor')
 
@@ -510,13 +387,13 @@ class ConvectionDiffusion(Equation):
       A state holding information stored in tensor.
     """
     c, vx, vy = tf.unstack(tensor, axis=3)
-    return {states.C: c, states.VX: vx, states.VY: vy}
+    return {C: c, VX: vx, VY: vy}
 
   @classmethod
   def from_proto(
       cls,
       proto: metadata_pb2.ConvectionDiffusionEquation
-  ) -> Equation:
+  ) -> equations.Equation:
     """Creates a class instance from protocol buffer.
 
     Args:
@@ -541,7 +418,7 @@ class ConstantVelocityConvectionDiffusion(ConvectionDiffusion):
   def from_proto(
       cls,
       proto: metadata_pb2.ConvectionDiffusionEquation
-  ) -> Equation:
+  ) -> equations.Equation:
     """Creates an instance from a protocol buffer.
 
     Args:
@@ -562,7 +439,7 @@ class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
   It requires first and second spatial derivatives to produce time derivative.
   """
 
-  SPATIAL_DERIVATIVES_KEYS = (states.C_X, states.C_Y, states.C_XX, states.C_YY)
+  SPATIAL_DERIVATIVES_KEYS = (C_X, C_Y, C_XX, C_YY)
 
   def time_derivative(
       self,
@@ -585,18 +462,18 @@ class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
     Returns:
       Time derivative of the state.
     """
-    check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    check_keys(state, self.STATE_KEYS)
+    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
+    equations.check_keys(state, self.STATE_KEYS)
     state_time_derivative = {}
     v_x = self.velocity_field.get_velocity_x(t, grid)
     v_y = self.velocity_field.get_velocity_y(t, grid)
 
-    c_x = spatial_derivatives[states.C_X]
-    c_y = spatial_derivatives[states.C_Y]
-    c_xx = spatial_derivatives[states.C_XX]
-    c_yy = spatial_derivatives[states.C_YY]
+    c_x = spatial_derivatives[C_X]
+    c_y = spatial_derivatives[C_Y]
+    c_xx = spatial_derivatives[C_XX]
+    c_yy = spatial_derivatives[C_YY]
 
-    state_time_derivative[states.C_T] = tf.add_n([
+    state_time_derivative[C_T] = tf.add_n([
         -1 * v_x * c_x,
         -1 * v_y * c_y,
         self.diffusion_const * c_xx,
@@ -618,8 +495,8 @@ class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
 class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
   """Implements finite volume scheme."""
 
-  SPATIAL_DERIVATIVES_KEYS = (states.C_EDGE_X, states.C_EDGE_Y,
-                              states.C_X_EDGE_X, states.C_Y_EDGE_Y)
+  SPATIAL_DERIVATIVES_KEYS = (C_EDGE_X, C_EDGE_Y,
+                              C_X_EDGE_X, C_Y_EDGE_Y)
 
   def time_derivative(
       self,
@@ -642,16 +519,16 @@ class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
     Returns:
       Time derivative of the state.
     """
-    check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    check_keys(state, self.STATE_KEYS)
+    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
+    equations.check_keys(state, self.STATE_KEYS)
     state_time_derivative = {}
     v_x = self.velocity_field.get_velocity_x(t, grid, shift=(1, 0))
     v_y = self.velocity_field.get_velocity_y(t, grid, shift=(0, 1))
 
-    c_edge_x = spatial_derivatives[states.C_EDGE_X]
-    c_edge_y = spatial_derivatives[states.C_EDGE_Y]
-    c_x_edge_x = spatial_derivatives[states.C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[states.C_Y_EDGE_Y]
+    c_edge_x = spatial_derivatives[C_EDGE_X]
+    c_edge_y = spatial_derivatives[C_EDGE_Y]
+    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
+    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
 
     # common division by the grid.step is done after aggregation of all fluxes.
     flux_x_out = -1 * v_x * c_edge_x
@@ -682,7 +559,7 @@ class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
     ])
 
     total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[states.C_T] = total_flux
+    state_time_derivative[C_T] = total_flux
     return state_time_derivative
 
   def to_proto(self) -> metadata_pb2.Equation:
@@ -699,7 +576,7 @@ class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
 class FiniteVolumeUpwindAdvectionDiffusion(AdvectionDiffusion):
   """Implements upwind finite volume scheme for advection diffusion equation."""
 
-  SPATIAL_DERIVATIVES_KEYS = (states.C_X_EDGE_X, states.C_Y_EDGE_Y)
+  SPATIAL_DERIVATIVES_KEYS = (C_X_EDGE_X, C_Y_EDGE_Y)
 
   def time_derivative(
       self,
@@ -724,8 +601,8 @@ class FiniteVolumeUpwindAdvectionDiffusion(AdvectionDiffusion):
     Returns:
       Time derivative of the state.
     """
-    check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    check_keys(state, self.STATE_KEYS)
+    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
+    equations.check_keys(state, self.STATE_KEYS)
     state_time_derivative = {}
 
     v_x_right = self.velocity_field.get_velocity_x(t, grid, shift=(1, 0))
@@ -734,14 +611,14 @@ class FiniteVolumeUpwindAdvectionDiffusion(AdvectionDiffusion):
     v_y_top = self.velocity_field.get_velocity_y(t, grid, shift=(0, 1))
     v_y_bottom = self.velocity_field.get_velocity_y(t, grid, shift=(0, -1))
 
-    c = state[states.C]
+    c = state[C]
     c_left = utils.roll_2d(c, (1, 0))
     c_right = utils.roll_2d(c, (-1, 0))
     c_top = utils.roll_2d(c, (0, -1))
     c_bottom = utils.roll_2d(c, (0, 1))
 
-    c_x_edge_x = spatial_derivatives[states.C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[states.C_Y_EDGE_Y]
+    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
+    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
 
     # common division by the grid.step is done after aggregation of all fluxes.
     flux_x_right_out = -1 * c * tf.maximum(v_x_right, 0.)
@@ -780,7 +657,7 @@ class FiniteVolumeUpwindAdvectionDiffusion(AdvectionDiffusion):
     ])
 
     total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[states.C_T] = total_flux
+    state_time_derivative[C_T] = total_flux
     return state_time_derivative
 
   def to_proto(self) -> metadata_pb2.Equation:
@@ -803,7 +680,7 @@ class InStateVelocityUpwindAdvectionDiffusion(
   advection-diffusion equation with variable velocity field.
   """
 
-  SPATIAL_DERIVATIVES_KEYS = (states.C_X_EDGE_X, states.C_Y_EDGE_Y)
+  SPATIAL_DERIVATIVES_KEYS = (C_X_EDGE_X, C_Y_EDGE_Y)
 
   def time_derivative(
       self,
@@ -828,24 +705,24 @@ class InStateVelocityUpwindAdvectionDiffusion(
     Returns:
       Time derivative of the state.
     """
-    check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    check_keys(state, self.STATE_KEYS)
+    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
+    equations.check_keys(state, self.STATE_KEYS)
     state_time_derivative = {}
 
-    v_x_right = state[states.VX]
+    v_x_right = state[VX]
     v_x_left = utils.roll_2d(v_x_right, (1, 0))
 
-    v_y_top = state[states.VY]
+    v_y_top = state[VY]
     v_y_bottom = utils.roll_2d(v_y_top, (0, 1))
 
-    c = state[states.C]
+    c = state[C]
     c_left = utils.roll_2d(c, (1, 0))
     c_right = utils.roll_2d(c, (-1, 0))
     c_top = utils.roll_2d(c, (0, -1))
     c_bottom = utils.roll_2d(c, (0, 1))
 
-    c_x_edge_x = spatial_derivatives[states.C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[states.C_Y_EDGE_Y]
+    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
+    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
 
     flux_x_right_out = -1 * c * tf.maximum(v_x_right, 0.)
     flux_x_right_in = c_right * tf.maximum(-v_x_right, 0.)
@@ -883,9 +760,9 @@ class InStateVelocityUpwindAdvectionDiffusion(
     ])
 
     total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[states.C_T] = total_flux
-    state_time_derivative[states.VX_T] = tf.zeros_like(v_x_left)
-    state_time_derivative[states.VY_T] = tf.zeros_like(v_y_top)
+    state_time_derivative[C_T] = total_flux
+    state_time_derivative[VX_T] = tf.zeros_like(v_x_left)
+    state_time_derivative[VY_T] = tf.zeros_like(v_y_top)
     return state_time_derivative
 
   def to_proto(self) -> metadata_pb2.Equation:
@@ -908,8 +785,8 @@ class InStateVelocityFiniteVolumeAdvectionDiffusion(
   fields are set to 0.
   """
 
-  SPATIAL_DERIVATIVES_KEYS = (states.C_EDGE_X, states.C_EDGE_Y,
-                              states.C_X_EDGE_X, states.C_Y_EDGE_Y)
+  SPATIAL_DERIVATIVES_KEYS = (C_EDGE_X, C_EDGE_Y,
+                              C_X_EDGE_X, C_Y_EDGE_Y)
 
   def time_derivative(
       self,
@@ -935,16 +812,16 @@ class InStateVelocityFiniteVolumeAdvectionDiffusion(
     Returns:
       Time derivative of the state.
     """
-    check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    check_keys(state, self.STATE_KEYS)
+    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
+    equations.check_keys(state, self.STATE_KEYS)
     state_time_derivative = {}
 
-    v_x = state[states.VX]
-    v_y = state[states.VY]
-    c_edge_x = spatial_derivatives[states.C_EDGE_X]
-    c_edge_y = spatial_derivatives[states.C_EDGE_Y]
-    c_x_edge_x = spatial_derivatives[states.C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[states.C_Y_EDGE_Y]
+    v_x = state[VX]
+    v_y = state[VY]
+    c_edge_x = spatial_derivatives[C_EDGE_X]
+    c_edge_y = spatial_derivatives[C_EDGE_Y]
+    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
+    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
 
     flux_x_out = -1 * v_x * c_edge_x
     flux_x_in = (utils.roll_2d(c_edge_x, (1, 0)) *
@@ -974,9 +851,9 @@ class InStateVelocityFiniteVolumeAdvectionDiffusion(
     ])
 
     total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[states.C_T] = total_flux
-    state_time_derivative[states.VX_T] = tf.zeros_like(v_x)
-    state_time_derivative[states.VY_T] = tf.zeros_like(v_y)
+    state_time_derivative[C_T] = total_flux
+    state_time_derivative[VX_T] = tf.zeros_like(v_x)
+    state_time_derivative[VY_T] = tf.zeros_like(v_y)
     return state_time_derivative
 
   def to_proto(self) -> metadata_pb2.Equation:
@@ -1223,22 +1100,6 @@ def generate_random_gaussians(
       for _ in range(batch_size)
   ]
   return np.stack(batch)
-
-
-def check_keys(dictionary: Dict[states.StateKey, Any],
-               expected_keys: Tuple[states.StateKey, ...]):
-  """Checks if the dictionary keys match the expected keys.
-
-  Args:
-    dictionary: Dictionary to check against expected_keys.
-    expected_keys: Key we expect to find in the dictionary.
-
-  Raises:
-    ValueError: Keys do not match.
-  """
-  if set(dictionary.keys()) != set(expected_keys):
-    raise ValueError('Keys do not match, got {} and {}'.format(
-        set(dictionary.keys()), set(expected_keys)))
 
 
 EQUATION_TYPES = {
