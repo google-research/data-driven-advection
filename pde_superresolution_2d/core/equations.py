@@ -24,11 +24,24 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import enum
+import collections
+import operator
+
+import numpy as np
+from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
 import tensorflow as tf
-from typing import Dict, Tuple, Any
+from typing import Any, Dict, Iterator, Tuple, Type, Union
+
+from google3.net.proto2.python.public import message
+
+
+KeyedTensors = Dict[states.StateKey, tf.Tensor]
+Shape = Union[int, Tuple[int]]
+
+
+CONTINUOUS_EQUATIONS = {}
 
 
 class Equation(object):
@@ -43,44 +56,85 @@ class Equation(object):
     STATE_KEYS: A tuple of StateKeys that represent the content of a state.
     CONSTANT_KEYS: A tuple of StateKeys found in STATE_KEYs that don't change
       over time.
-    SPATIAL_DERIVATIVES_KEYS: A tuple of StateKeys that specifies requested
-      spatial derivatives.
+    INPUT_KEYS: A tuple of StateKeys that specifies requested inputs (i.e.,
+      spatial derivatives) for use in the time_derivative() or take_time_step()
+      methods.
+    DISCRETIZATION_NAME: Name of the discretization method.
+    METHOD: Discretization method type (finite difference or finite volume).
+    MONOTONIC: Are dynamics guaranteed to be monotonic?
   """
 
+  DISCRETIZATION_NAME = ...   # type: str
+  METHOD = ...  # type: metadata_pb2.Equation.Discretization.Method
+  MONOTONIC = ...  # type: bool
+
   STATE_KEYS = ...  # type: Tuple[states.StateKey, ...]
-  CONSTANT_KEYS = ...  # type: Tuple[states.StateKey, ...]
-  SPATIAL_DERIVATIVES_KEYS = ...  # type: Tuple[states.StateKey, ...]
+  CONSTANT_KEYS = {}  # type: Tuple[states.StateKey, ...]
+  INPUT_KEYS = ...  # type: Tuple[states.StateKey, ...]
 
   def time_derivative(
       self,
-      state: Dict[states.StateKey, tf.Tensor],
-      t: float,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
       grid: grids.Grid,
-      spatial_derivatives: Dict[states.StateKey, tf.Tensor]
-  ) -> Dict[states.StateKey, tf.Tensor]:
+      time: float = 0.0,
+  ) -> KeyedTensors:
     """Returns time derivative of the given state.
 
     Computes time derivatives of the state described by PDE using
     provided spatial derivatives.
 
     Args:
-      state: Current state of the solution at time t.
-      t: Time at which to evaluate time derivatives.
-      grid: Grid object holding discretization parameters.
-      spatial_derivatives: Requested spatial derivatives.
+      state: tensors corresponding to each key in STATE_KEYS, indicating the
+        current state.
+      inputs: tensors corresponding to each key in INPUT_KEYS.
+      grid: description of discretization parameters.
+      time: time at which to evaluate time derivatives.
 
     Returns:
-      Time derivative of the state.
+      Time derivative for each non-constant term in the state.
     """
     raise NotImplementedError
 
-  def initial_state(
+  def take_time_step(
       self,
-      init_type: enum.Enum,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
       grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """Take single time-step.
+
+    The time step will be of size self.get_time_step().
+
+    The default implementation is an (explicit) forward Euler method.
+
+    Args:
+      state: tensors corresponding to each key in STATE_KEYS, indicating the
+        current state.
+      inputs: tensors corresponding to each key in INPUT_KEYS.
+      grid: description of discretization parameters.
+      time: time at which the step is taken.
+
+    Returns:
+      Updated values for each non-constant term in the state.
+    """
+    evolving_state = {k: v for k, v in state.items()
+                      if k not in self.CONSTANT_KEYS}
+    time_derivs = self.time_derivative(state, inputs, grid, time)
+    dt = self.get_time_step(grid)
+    new_state = {k: u + dt * time_derivs[k.time_derivative()]
+                 for k, u in evolving_state.items()}
+    return new_state
+
+  def random_state(
+      self,
+      grid: grids.Grid,
+      params: Dict[str, Dict[str, Any]] = None,
+      size: Shape = (),
+      seed: int = None,
+      dtype: Any = np.float32,
+  ) -> Dict[states.StateKey, np.ndarray]:
     """Returns a state with fully parametrized initial conditions.
 
     Generates initial conditions of `init_type`. All parameters of
@@ -91,37 +145,11 @@ class Equation(object):
     random ensemble of initial conditions use initial_random_state.
 
     Args:
-      init_type: Initialization method enum.
       grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Arguments to be passed to initialization methods.
-
-    Returns:
-      State with initial values.
-    """
-    raise NotImplementedError
-
-  def initial_random_state(
-      self,
-      seed: int,
-      init_type: enum.Enum,
-      grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns a state with random initial conditions.
-
-    Generates an initial state with values from an ensemble defined by
-    `init_type`. Parameters of the distribution can be modified by providing
-    override values in `kwargs`. Intended for generation of training data and
-    large validation datasets.
-
-    Args:
-      seed: Random seed to use for random number generator.
-      init_type: Initialization method enum.
-      grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Arguments to be passed to initialization methods.
+      params: initialization parameters.
+      size: size of the batch dimension.
+      seed: random seed.
+      dtype: dtype of the resulting numpy arrays.
 
     Returns:
       State with initial values.
@@ -141,30 +169,13 @@ class Equation(object):
     """
     raise NotImplementedError
 
-  def to_tensor(self, state: Dict[states.StateKey, tf.Tensor]) -> tf.Tensor:
-    """Compresses a state to a single tensor.
-
-    Args:
-      state: State to be converted to a tensor.
-
-    Returns:
-      A tensor holding information about the state.
-    """
-    raise NotImplementedError
-
-  def to_state(self, tensor: tf.Tensor) -> Dict[states.StateKey, tf.Tensor]:
-    """Decompresses a tensor into a state.
-
-    Args:
-      tensor: A tensor representing the state.
-
-    Returns:
-      A state holding information stored in tensor.
-    """
-    raise NotImplementedError
-
-  def to_proto(self):
+  def to_proto(self) -> metadata_pb2.Equation:
     """Creates a protocol buffer holding parameters of the equation."""
+    raise NotImplementedError
+
+  @classmethod
+  def from_proto(cls, proto: message.Message) -> 'Equation':
+    """Create this equation from an equation-specific protocol buffer."""
     raise NotImplementedError
 
 
@@ -182,3 +193,63 @@ def check_keys(dictionary: Dict[states.StateKey, Any],
   if set(dictionary.keys()) != set(expected_keys):
     raise ValueError('Keys do not match, got {} and {}'.format(
         set(dictionary.keys()), set(expected_keys)))
+
+
+def register_continuous_equation(key: str):
+  """Register a class with a continuous equation."""
+  def decorator(cls: Type[Equation]):
+    CONTINUOUS_EQUATIONS[key] = cls
+    return cls
+  return decorator
+
+
+def _breadth_first_subclasses(base: Type[Equation]) -> Iterator[Type[Equation]]:
+  """Yields all subclasses of a given class in breadth-first order."""
+  # https://stackoverflow.com/questions/3862310
+  subclasses = collections.deque([base])
+  while subclasses:
+    subclass = subclasses.popleft()
+    yield subclass
+    subclasses.extend(subclass.__subclasses__())
+
+
+def matching_equation_type(
+    continuous_equation_type: Type[Equation],
+    discretization: str,
+) -> Type[Equation]:
+  """Find the equation with the matching discretization."""
+  for subclass in _breadth_first_subclasses(continuous_equation_type):
+    if subclass.DISCRETIZATION_NAME == discretization:
+      return subclass
+
+  raise ValueError('equation {} and discretization {} not found'
+                   .format(continuous_equation_type, discretization))
+
+
+def equation_from_proto(
+    proto: metadata_pb2.Equation,
+    discretization: str = None,
+) -> Equation:
+  """Constructs an equation from the Equation protocol buffer.
+
+  Args:
+    proto: Equation protocol buffer encoding the Equation.
+    discretization: Override the discretization scheme for the equation. Needed
+      for testing different implementation in training and evaluation.
+
+  Returns:
+    Equation object.
+
+  Raises:
+    ValueError: Provided protocol buffer was not recognized, check proto names.
+  """
+  if discretization is None:
+    discretization = proto.discretization.name
+
+  continuous_equation = proto.WhichOneof('continuous_equation')
+  equation_proto = getattr(proto, continuous_equation)
+
+  base_equation_type = CONTINUOUS_EQUATIONS[continuous_equation]
+  equation_type = matching_equation_type(base_equation_type, discretization)
+  return equation_type.from_proto(equation_proto)
+

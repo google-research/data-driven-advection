@@ -56,9 +56,9 @@ class GridTest(absltest.TestCase):
     with self.assertRaises(ValueError):
       self.test_grid.get_mesh((1, 1, 0, 1))
 
-  def test_get_shape(self):
+  def test_shape(self):
     expected_shape = (self.size, self.size)
-    test_shape = self.test_grid.get_shape()
+    test_shape = self.test_grid.shape
     self.assertEqual(expected_shape, test_shape)
 
   def test_proto_conversion(self):
@@ -66,7 +66,7 @@ class GridTest(absltest.TestCase):
     self.assertEqual(grid_proto.size_x, self.test_grid.size_x)
     self.assertEqual(grid_proto.size_y, self.test_grid.size_y)
     self.assertAlmostEqual(grid_proto.step, self.test_grid.step)
-    grid_from_proto = grids.grid_from_proto(grid_proto)
+    grid_from_proto = grids.Grid.from_proto(grid_proto)
     self.assertEqual(grid_from_proto.size_x, self.test_grid.size_x)
     self.assertEqual(grid_from_proto.size_y, self.test_grid.size_y)
     self.assertAlmostEqual(grid_from_proto.step, self.test_grid.step)

@@ -22,18 +22,17 @@ import os.path
 from absl import flags
 from absl.testing import flagsaver
 import numpy as np
-import tensorflow as tf
 
-from tensorflow import gfile
-from absl.testing import absltest
 from pde_superresolution_2d.advection import equations as advection_equations
-from pde_superresolution_2d.advection import create_training_data
-from pde_superresolution_2d.core import dataset_readers
-from pde_superresolution_2d.core import equations
-from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d.core import models
-from pde_superresolution_2d.core import states
+from pde_superresolution_2d.core import readers
+from pde_superresolution_2d.pipelines import create_training_data
+from tensorflow import gfile
+import tensorflow as tf
+from absl.testing import absltest
 
+
+# dataset writing needs to be happen in eager mode
+tf.enable_eager_execution()
 
 FLAGS = flags.FLAGS
 
@@ -45,87 +44,84 @@ class WriteReadDataTest(absltest.TestCase):
     output_path = FLAGS.test_tmpdir
     output_name = 'temp'
     equation_name = 'advection_diffusion'
-    equation_scheme = 'FINITE_VOLUME'
-    model_type = 'roll_finite_difference'
+    discretization = 'finite_volume'
     dataset_type = 'all_derivatives'
     high_resolution = 125
     low_resolution = 25
     shards = 2
-    batch_size = 3
-    diffusion_const = 0.3
+    example_time_steps = 3
+    batch_size = 4
+    diffusion_coefficient = 0.3
 
-    scheme = metadata_pb2.Equation.DiscretizationScheme.Value(equation_scheme)
-    expected_equation_type = advection_equations.EQUATION_TYPES[
-        (equation_name, scheme)]
+    expected_equation_type = advection_equations.FiniteVolumeAdvectionDiffusion
 
     # create a temporary dataset
     with flagsaver.flagsaver(
         dataset_path=output_path,
         dataset_name=output_name,
         equation_name=equation_name,
-        equation_scheme=equation_scheme,
-        baseline_model_type=model_type,
-        high_resolution_points=high_resolution,
-        low_resolution_points=low_resolution,
-        diffusion_const=diffusion_const,
+        discretization=discretization,
+        simulation_grid_resolution=high_resolution,
+        output_grid_resolution=low_resolution,
+        equation_kwargs=str(dict(diffusion_coefficient=diffusion_coefficient)),
         dataset_type=dataset_type,
         num_shards=shards,
-        max_time=0.04,
-        num_time_slices=10,
-        num_samples=3
+        total_time_steps=10,
+        example_time_steps=example_time_steps,
+        time_step_interval=5,
+        num_seeds=4,
     ):
       create_training_data.main([])
 
     metadata_path = os.path.join(output_path, output_name + '.metadata')
     self.assertTrue(gfile.Exists(metadata_path))
-    dataset_metadata = dataset_readers.load_metadata(metadata_path)
-    low_res_grid = dataset_readers.get_low_res_grid(dataset_metadata)
-    high_res_grid = dataset_readers.get_high_res_grid(dataset_metadata)
-    equation = advection_equations.equation_from_proto(
-        dataset_metadata.equation)
-    baseline_model = dataset_readers.get_baseline_model(dataset_metadata)
+    dataset_metadata = readers.load_metadata(metadata_path)
+    low_res_grid = readers.get_output_grid(dataset_metadata)
+    high_res_grid = readers.get_simulation_grid(dataset_metadata)
+    equation = readers.get_equation(dataset_metadata)
 
     self.assertEqual(low_res_grid.size_x, low_resolution)
     self.assertEqual(low_res_grid.size_y, low_resolution)
     self.assertEqual(high_res_grid.size_x, high_resolution)
     self.assertEqual(high_res_grid.size_y, high_resolution)
     self.assertAlmostEqual(high_res_grid.step, 2 * np.pi / high_resolution)
-    self.assertAlmostEqual(equation.diffusion_const, diffusion_const)
+    self.assertAlmostEqual(
+        equation.diffusion_coefficient, diffusion_coefficient)
     self.assertIsInstance(equation, expected_equation_type)
-    self.assertIsInstance(baseline_model, models.MODEL_TYPES[model_type])
+    self.assertEqual(dataset_metadata.model.WhichOneof('model'),
+                     'finite_difference')
 
-    valid_data_keys = ((advection_equations.C,), (advection_equations.C_EDGE_X, advection_equations.C_Y_EDGE_Y))
-    invalid_data_keys = ((advection_equations.C, advection_equations.C_X), (advection_equations.C_EDGE_X,))
+    valid_data_keys = ((advection_equations.C.exact(),),
+                       (advection_equations.C_EDGE_X.exact(),
+                        advection_equations.C_Y_EDGE_Y.exact()))
+    invalid_data_keys = ((advection_equations.C,
+                          advection_equations.C_X),
+                         (advection_equations.C_EDGE_X,))
     valid_data_grids = (low_res_grid, low_res_grid)
     invalid_data_grids = (low_res_grid, high_res_grid)
 
     with self.assertRaises(ValueError):
-      dataset_readers.initialize_dataset(
+      readers.initialize_dataset(
           dataset_metadata, invalid_data_keys, valid_data_grids)
     with self.assertRaises(ValueError):
-      dataset_readers.initialize_dataset(
+      readers.initialize_dataset(
           dataset_metadata, valid_data_keys, invalid_data_grids)
     with self.assertRaises(ValueError):
-      dataset_readers.initialize_dataset(
+      readers.initialize_dataset(
           dataset_metadata, invalid_data_keys, invalid_data_grids)
 
-    dataset = dataset_readers.initialize_dataset(
+    dataset = readers.initialize_dataset(
         dataset_metadata, valid_data_keys, valid_data_grids)
     dataset = dataset.repeat()
     dataset = dataset.batch(batch_size)
 
-    iterator = tf.data.Iterator.from_structure(
-        dataset.output_types, dataset.output_shapes)
-    iterator_initializer = iterator.make_initializer(dataset)
-
-    with tf.Session() as sess:
-      sess.run(iterator_initializer)
-      first_state, second_state = sess.run(iterator.get_next())
+    [(first_state, second_state)] = dataset.take(1)
     self.assertEqual(set(first_state.keys()), set(valid_data_keys[0]))
     self.assertEqual(set(second_state.keys()), set(valid_data_keys[1]))
     first_state_shape = np.shape(first_state[valid_data_keys[0][0]])
     second_state_shape = np.shape(second_state[valid_data_keys[1][0]])
-    expected_shape = (batch_size, low_resolution, low_resolution)
+    expected_shape = (
+        batch_size, example_time_steps, low_resolution, low_resolution)
     self.assertEqual(first_state_shape, expected_shape)
     self.assertEqual(second_state_shape, expected_shape)
 
@@ -135,57 +131,45 @@ class WriteReadDataTest(absltest.TestCase):
     output_name = 'temp'
 
     equation_name = 'advection_diffusion'
-    equation_scheme = 'FINITE_VOLUME'
+    discretization = 'finite_volume'
 
     # create a temporary dataset
     with flagsaver.flagsaver(
         dataset_path=output_path,
         dataset_name=output_name,
         equation_name=equation_name,
-        equation_scheme=equation_scheme,
-        baseline_model_type='roll_finite_difference',
-        high_resolution_points=100,
-        low_resolution_points=25,
-        diffusion_const=0.3,
+        discretization=discretization,
+        simulation_grid_resolution=256,
+        output_grid_resolution=32,
         dataset_type='all_derivatives',
-        num_shards=1,
-        max_time=0.04,
-        num_time_slices=10,
-        num_samples=3
+        total_time_steps=10,
+        example_time_steps=3,
+        time_step_interval=5,
+        num_seeds=4,
     ):
       create_training_data.main([])
 
     metadata_path = os.path.join(output_path, output_name + '.metadata')
-    dataset_metadata = dataset_readers.load_metadata(metadata_path)
-    low_res_grid = dataset_readers.get_low_res_grid(dataset_metadata)
+    dataset_metadata = readers.load_metadata(metadata_path)
+    low_res_grid = readers.get_output_grid(dataset_metadata)
 
-    data_keys = ((advection_equations.C,),)
-    data_grids = (low_res_grid,)
-
-    dataset = dataset_readers.initialize_dataset(
-        dataset_metadata, data_keys, data_grids)
+    data_key = advection_equations.C.exact()
+    dataset = readers.initialize_dataset(
+        dataset_metadata, ((data_key,),), (low_res_grid,))
     dataset = dataset.repeat(1)
     dataset = dataset.batch(1)
-
-    iterator = tf.data.Iterator.from_structure(
-        dataset.output_types, dataset.output_shapes)
-    iterator_initializer = iterator.make_initializer(dataset)
-    state = iterator.get_next()
-
-    all_data = []
-    with tf.Session() as sess:
-      sess.run(iterator_initializer)
-      try:
-        while True:
-          all_data.append(sess.run(state[0][advection_equations.C]).flatten())
-      except tf.errors.OutOfRangeError:
-        all_data = np.concatenate(all_data)
+    all_data = np.concatenate(
+        [np.ravel(data[0][data_key]) for data in dataset])
 
     expected_mean = np.mean(all_data)
-    expected_variance = np.std(all_data) ** 2
+    expected_variance = np.var(all_data, ddof=1)
 
-    metadata_mean = dataset_metadata.input_mean
-    metadata_variance = dataset_metadata.input_variance
+    keys = readers.data_component_keys(dataset_metadata.components)
+    components_dict = {k: v for k, v in zip(keys, dataset_metadata.components)}
+
+    component = components_dict[data_key, low_res_grid]
+    metadata_mean = component.mean
+    metadata_variance = component.variance
 
     np.testing.assert_allclose(metadata_mean, expected_mean, atol=1e-3)
     np.testing.assert_allclose(metadata_variance, expected_variance, atol=1e-3)

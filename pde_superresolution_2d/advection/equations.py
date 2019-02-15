@@ -12,24 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Advection diffussion equations.
-"""
+"""Advection diffussion equations."""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import enum
+import functools
+
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.advection import velocity_fields
 from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
-from pde_superresolution_2d.core import utils
+from pde_superresolution_2d.core import tensor_ops
 import tensorflow as tf
-from typing import Dict, Any
-
+from typing import Any, Dict, Tuple, Union
 
 C = states.StateKey('concentration', (0, 0, 0), (0, 0))
 C_EDGE_X = states.StateKey('concentration', (0, 0, 0), (1, 0))
@@ -40,955 +39,708 @@ C_T = states.StateKey('concentration', (0, 0, 1), (0, 0))
 C_X_EDGE_X = states.StateKey('concentration', (1, 0, 0), (1, 0))
 C_Y_EDGE_Y = states.StateKey('concentration', (0, 1, 0), (0, 1))
 C_XX = states.StateKey('concentration', (2, 0, 0), (0, 0))
-C_XY = states.StateKey('concentration', (1, 1, 0), (0, 0))
 C_YY = states.StateKey('concentration', (0, 2, 0), (0, 0))
 
 VX = states.StateKey('velocity_x', (0, 0, 0), (0, 0))
 VY = states.StateKey('velocity_y', (0, 0, 0), (0, 0))
-VX_T = states.StateKey('velocity_x', (0, 0, 1), (0, 0))
-VY_T = states.StateKey('velocity_y', (0, 0, 1), (0, 0))
+VX_EDGE_X = states.StateKey('velocity_x', (0, 0, 0), (1, 0))
+VY_EDGE_Y = states.StateKey('velocity_y', (0, 0, 0), (0, 1))
+
+KeyedTensors = Dict[states.StateKey, tf.Tensor]
+ArrayLike = Union[np.ndarray, np.generic, float]
+Shape = Union[int, Tuple[int]]
+
+# numpy.random.RandomState uses uint32 for seeds
+MAX_SEED_PLUS_ONE = 2**32
+
+# We really are using native Python strings everywhere (no serialization to
+# bytes/unicode is involved)
+# pylint: disable=g-ambiguous-str-annotation
 
 
-class InitialConditionMethod(enum.Enum):
-  """Enumeration of initialization methods."""
-  GAUSSIAN = 'GAUSSIAN'
-  FOURIER = 'FOURIER'
-  GAUSS_AND_FOURIER = 'GAUSS_AND_FOURIER'
-  PLACEHOLDER = 'PLACEHOLDER'
+class _AdvectionDiffusionBase(equations.Equation):
+  """Shared base class for advection and advection-diffusion equations."""
 
+  @property
+  def diffusion_coefficient(self) -> float:
+    raise NotImplementedError
 
-class AdvectionDiffusion(equations.Equation):
-  """Base class for advection diffusion equations.
+  @property
+  def cfl_safety_factor(self) -> float:
+    raise NotImplementedError
 
-  Advection diffusion equation defines the state and common methods. Specific
-  implementation must provide time_derivative() and to_proto() methods.
-  """
-  STATE_KEYS = (C,)
-
-  def __init__(self,
-               velocity_field: velocity_fields.VelocityField,
-               diffusion_const: float):
-    self.velocity_field = velocity_field
-    self.diffusion_const = diffusion_const
-
-  def initial_state(
+  def random_state(
       self,
-      init_type: InitialConditionMethod,
       grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns state with parametrized advection-diffusion initial conditions.
-
-    See base class.
-
-    Args:
-      init_type: Initialization method, must be one of the
-          InitialConditionMethods.
-      grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Parameters of initialization.
-
-    Returns:
-      State with specified initial values.
-
-    Raises:
-      ValueError: Provided initialization method is not supported.
-    """
-    state = {}
-    if init_type == InitialConditionMethod.PLACEHOLDER:
-      state_shape = (batch_size, grid.size_x, grid.size_y)
-      state[C] = tf.placeholder(tf.float64, shape=state_shape)
-    elif init_type == InitialConditionMethod.GAUSSIAN:
-      state[C] = generate_gaussian(
-          batch_size, grid, **kwargs)
-    elif init_type == InitialConditionMethod.FOURIER:
-      state[C] = generate_fourier_terms(
-          batch_size, grid, **kwargs)
-    else:
-      raise ValueError('Given initialization method is not supported')
-    return state
-
-  def initial_random_state(
-      self,
-      seed: int,
-      init_type: InitialConditionMethod,
-      grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns a state with random initial conditions for advection diffusion.
-
-    See base class.
-
-    Args:
-      seed: Random seed to use for random number generator.
-      init_type: Initialization method, must be one of the
-          InitialConditionMethods.
-      grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Parameters of initialization.
-
-    Returns:
-      State with random initial values.
-
-    Raises:
-      ValueError: Provided initialization method is not supported.
-    """
-    rnd_gen = np.random.RandomState(seed=seed)
-
-    state = {}
-    if init_type == InitialConditionMethod.GAUSSIAN:
-      state[C] = generate_random_gaussians(
-          batch_size, rnd_gen, grid, **kwargs)
-    elif init_type == InitialConditionMethod.FOURIER:
-      state[C] = generate_random_fourier_terms(
-          batch_size, rnd_gen, grid, **kwargs)
-    elif init_type == InitialConditionMethod.GAUSS_AND_FOURIER:
-      if seed % 2 == 0:
-        state[C] = generate_random_fourier_terms(
-            batch_size, rnd_gen, grid, **kwargs)
-      else:
-        state[C] = generate_random_gaussians(
-            batch_size, rnd_gen, grid, **kwargs)
-    else:
-      raise ValueError('Given initialization method is not supported')
-    return state
-
-  def get_time_step(self, grid: grids.Grid) -> float:
-    """Returns appropriate time step for time marching the equation on grid.
-
-    Stability condition on time step is V*dt < `grid.step`.
-
-    Args:
-      grid: Grid object holding discretization parameters.
-
-    Returns:
-      The value of an appropriate time step.
-    """
-    return 0.5 * grid.step
-
-  def to_tensor(self, state: Dict[states.StateKey, tf.Tensor]) -> tf.Tensor:
-    """Compresses a state or a time derivative of a state to a single tensor.
-
-    Args:
-      state: State to be converted to a tensor.
-
-    Returns:
-      A tensor holding information about the state.
-
-    Raises:
-      ValueError: If state is not a state or a state derivative.
-    """
-    if set(state.keys()) == set((C,)):
-      return state[C]
-    elif set(state.keys()) == set((C_T,)):
-      return state[C_T]
-    else:
-      raise ValueError('Input state is not convertible to a tensor')
-
-  def to_state(self, tensor: tf.Tensor) -> Dict[states.StateKey, tf.Tensor]:
-    """Decompresses a tensor into a state of zeroth time derivative.
-
-    Args:
-      tensor: A tensor representing the state.
-
-    Returns:
-      A state holding information stored in tensor.
-    """
-    return {C: tensor}
-
-  @classmethod
-  def from_proto(
-      cls,
-      proto: metadata_pb2.AdvectionDiffusionEquation
-  ) -> equations.Equation:
-    """Creates a class instance from protocol buffer.
-
-    Args:
-      proto: Protocol buffer holding AdvectionDiffusion parameters.
-
-    Returns:
-      AdvectionDiffusion object initialized from the protobuf.
-    """
-    v_field_proto = proto.velocity_field
-    diffusion_const = proto.diffusion_const
-    velocity_field = velocity_fields.velocity_field_from_proto(v_field_proto)  # pytype: disable=wrong-arg-types
-    return cls(velocity_field, diffusion_const)
-
-
-class ConvectionDiffusion(equations.Equation):
-  """Base class for convection diffusion equations.
-
-  Convection diffusion equation defines the state and common methods. Specific
-  implementation must provide time_derivative() and to_proto() methods. Some
-  implementations can focus on constant velocity field, which effectively
-  represent the advection-diffusion equation, those should be named accordingly.
-  """
-  STATE_KEYS = (C, VX, VY)
-
-  def __init__(self, diffusion_const: float):
-    self.diffusion_const = diffusion_const
-
-  def initial_state(
-      self,
-      init_type: InitialConditionMethod,
-      grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns a state with fully specified initial conditions.
-
-    Args:
-      init_type: Initialization method, must be one of the
-          InitialConditionMethods.
-      grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Parameters of initialization.
-
-    Returns:
-      State with specified initial values.
-
-    Raises:
-      ValueError: Provided initialization method is not supported.
-    """
-    num_velocity_terms = kwargs.get('num_velocity_terms', 4)
-    max_velocity_periods = kwargs.get('max_velocity_periods', 3)
-    velocity_field_random_seed = kwargs.get('velocity_field_random_seed', 1)
-
-    v_field = velocity_fields.ConstantVelocityField.from_seed(
-        num_velocity_terms, max_velocity_periods, velocity_field_random_seed)
-
-    vx_arg = {'t': 0., 'grid': grid, 'shift': (1, 0)}  # evaluated on x edge
-    vy_arg = {'t': 0., 'grid': grid, 'shift': (0, 1)}  # evaluated on y edge
-    velocity_tile_param = (batch_size, 1, 1)
-
-    state = {}
-    if init_type == InitialConditionMethod.PLACEHOLDER:
-      state_shape = (batch_size, grid.size_x, grid.size_y)
-      state[C] = tf.placeholder(tf.float64, shape=state_shape)
-      state[VX] = tf.placeholder(tf.float64, shape=state_shape)
-      state[VY] = tf.placeholder(tf.float64, shape=state_shape)
-    elif init_type == InitialConditionMethod.GAUSSIAN:
-      state[C] = generate_gaussian(
-          batch_size, grid, **kwargs)
-      state[VX] = np.tile(v_field.get_velocity_x(
-          **vx_arg), velocity_tile_param)
-      state[VY] = np.tile(v_field.get_velocity_y(
-          **vy_arg), velocity_tile_param)
-    elif init_type == InitialConditionMethod.FOURIER:
-      state[C] = generate_fourier_terms(
-          batch_size, grid, **kwargs)
-      state[VX] = np.tile(v_field.get_velocity_x(
-          **vx_arg), velocity_tile_param)
-      state[VY] = np.tile(v_field.get_velocity_y(
-          **vy_arg), velocity_tile_param)
-    else:
-      raise ValueError('Given initialization method is not supported')
-    return state
-
-  def initial_random_state(
-      self,
-      seed: int,
-      init_type: InitialConditionMethod,
-      grid: grids.Grid,
-      batch_size: int = 1,
-      **kwargs: Any
-  ) -> Dict[states.StateKey, tf.Tensor]:
+      params: Dict[str, Dict[str, Any]] = None,
+      size: Shape = (),
+      seed: int = None,
+      dtype: Any = np.float32,
+  ) -> Dict[states.StateKey, np.ndarray]:
     """Returns a state with random initial conditions for a given ensemble.
 
     Args:
-      seed: Random seed to use for random number generator.
-      init_type: Initialization method, must be one of the
-          InitialConditionMethods.
       grid: Grid object holding discretization parameters.
-      batch_size: Size of the batch dimension.
-      **kwargs: Parameters of initialization.
+      params: optional dict with keys 'concentration' and 'velocity' specifying
+        concentration and velocity parameters passed on to the
+        random_concentration() and random_velocities() methods.
+      size: leading "batch" dimensions to include on output tensors.
+      seed: random seed to use for random number generator.
+      dtype: dtype for generated tensors.
 
     Returns:
       State with random initial values.
 
     Raises:
-      ValueError: Provided initialization method is not supported.
+      ValueError: if 'seed' is specified both directly and inside the params
+        dict for concentration or velocities.
     """
-    rnd_gen = np.random.RandomState(seed=seed)
+    if params is None:
+      params = {}
+    params = dict(params)
+    params.setdefault('concentration', {})
+    params.setdefault('velocity', {})
 
-    num_velocity_terms = kwargs.get('num_velocity_terms', 4)
-    max_velocity_periods = kwargs.get('max_velocity_periods', 3)
-    v_field = velocity_fields.ConstantVelocityField(
-        rnd_gen, num_velocity_terms, max_velocity_periods)
+    if seed is not None:
+      if 'seed' in params['concentration'] or 'seed' in params['velocity']:
+        raise ValueError('cannot set seed if concentration or velocity seeds '
+                         'also provided.')
 
-    vx_arg = {'t': 0., 'grid': grid, 'shift': (1, 0)}  # evaluated on x edge
-    vy_arg = {'t': 0., 'grid': grid, 'shift': (0, 1)}  # evaluated on y edge
+      random = np.random.RandomState(seed)
+      params['concentration']['seed'] = random.randint(MAX_SEED_PLUS_ONE)
+      params['velocity']['seed'] = random.randint(MAX_SEED_PLUS_ONE)
 
     state = {}
-    state[VX] = np.tile(v_field.get_velocity_x(
-        **vx_arg), (batch_size, 1, 1))
-    state[VY] = np.tile(v_field.get_velocity_y(
-        **vy_arg), (batch_size, 1, 1))
-    if init_type == InitialConditionMethod.GAUSSIAN:
-      state[C] = generate_random_gaussians(
-          batch_size, rnd_gen, grid, **kwargs)
-    elif init_type == InitialConditionMethod.FOURIER:
-      state[C] = generate_random_fourier_terms(
-          batch_size, rnd_gen, grid, **kwargs)
-    elif init_type == InitialConditionMethod.GAUSS_AND_FOURIER:
-      if seed % 2 == 0:
-        state[C] = generate_random_fourier_terms(
-            batch_size, rnd_gen, grid, **kwargs)
-      else:
-        state[C] = generate_random_gaussians(
-            batch_size, rnd_gen, grid, **kwargs)
-    else:
-      raise ValueError('Given initialization method is not supported')
+    state[C] = self.random_concentration(
+        grid, size, **params['concentration'])
+
+    vx_key, vy_key = self.CONSTANT_KEYS
+    state[vx_key], state[vy_key] = self.random_velocities(
+        grid, size, **params['velocity'])
+
+    state = {k: v.astype(dtype) for k, v in state.items()}
+
     return state
 
-  def get_time_step(self, grid: grids.Grid) -> float:
-    """Returns appropriate time step for time marching the equation on grid.
+  def random_concentration(self,
+                           grid: grids.Grid,
+                           size: Shape = (),
+                           method: str = 'sum_of_gaussians',
+                           **kwargs: Any) -> np.ndarray:
+    """Create a random concentration."""
+    if method == 'sum_of_gaussians':
+      return random_sum_of_gaussians(grid=grid, size=size, **kwargs)
+    elif method == 'fourier_series':
+      return random_fourier_series(grid=grid, size=size, **kwargs)
+    else:
+      raise ValueError('initialization method not supported: {}'.format(method))
 
-    Stability condition on time step is V*dt < `grid.step`.
+  def random_velocities(self, grid: grids.Grid, size: Shape = (),
+                        **kwargs: Any) -> Tuple[np.ndarray, np.ndarray]:
+    """Create random X- and Y-velocities."""
+
+    v_field = velocity_fields.ConstantVelocityField.from_seed(**kwargs)
+
+    vx_key, vy_key = self.CONSTANT_KEYS
+    assert vx_key.name == 'velocity_x'
+    assert vy_key.name == 'velocity_y'
+
+    if isinstance(size, int):
+      size = (size,)
+    state_shape = size + (grid.size_x, grid.size_y)
+
+    # finite differences represents the solution at points;
+    # finite volumes represents the solution over unit-cells.
+    cell_average = (
+        self.METHOD != metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE)
+    vx = v_field.get_velocity_x(
+        t=0, grid=grid, shift=vx_key.offset, cell_average=cell_average)
+    vy = v_field.get_velocity_y(
+        t=0, grid=grid, shift=vy_key.offset, cell_average=cell_average)
+    return np.broadcast_to(vx, state_shape), np.broadcast_to(vy, state_shape)
+
+  def get_time_step(self, grid: grids.Grid, max_velocity: float = 1.0) -> float:
+    """Returns appropriate time step for a forward time-step.
+
+    Stability conditions on the time step:
+    - For advection: dt <= v_max * dx.
+    - For diffusion: dt <= dx**2 / (2**N * D)
+
+    where N is the number of spatial dimensions.
+
+    Both conditions need to be satisfied for stable numerical integration. Note
+    that if diffusion dominates, explicit time stepping is a really bad idea.
+
+    References:
+      CFL condition (for advection):
+        https://en.wikipedia.org/wiki/Courant%E2%80%93Friedrichs%E2%80%93Lewy_condition
+      FTCS scheme (for diffusion):
+        https://en.wikipedia.org/wiki/FTCS_scheme
+        http://web.cecs.pdx.edu/~gerry/class/ME448/notes/pdf/FTCS_slides_2up.pdf
 
     Args:
       grid: Grid object holding discretization parameters.
+      max_velocity: maximum velocity of the field.
 
     Returns:
       The value of an appropriate time step.
     """
-    return 0.5 * grid.step
-
-  def to_tensor(self, state: Dict[states.StateKey, tf.Tensor]) -> tf.Tensor:
-    """Compresses a state or a time derivative of a state to a single tensor.
-
-    Args:
-      state: State to be converted to a tensor.
-
-    Returns:
-      A tensor holding information about the state.
-
-    Raises:
-      ValueError: If state is not a state or a state derivative.
-    """
-    if set(state.keys()) == set((C, VX, VY)):
-      return tf.stack(
-          [state[C], state[VX], state[VY]], axis=3)
-    elif set(state.keys()) == set((C_T, VX_T, VY_T)):
-      return tf.stack(
-          [state[C_T], state[VX_T], state[VY_T]], axis=3)
-    else:
-      raise ValueError('Input state is not convertible to a tensor')
-
-  def to_state(self, tensor: tf.Tensor) -> Dict[states.StateKey, tf.Tensor]:
-    """Decompresses a tensor into a state of zeroth time derivative.
-
-    Args:
-      tensor: A tensor representing the state.
-
-    Returns:
-      A state holding information stored in tensor.
-    """
-    c, vx, vy = tf.unstack(tensor, axis=3)
-    return {C: c, VX: vx, VY: vy}
-
-  @classmethod
-  def from_proto(
-      cls,
-      proto: metadata_pb2.ConvectionDiffusionEquation
-  ) -> equations.Equation:
-    """Creates a class instance from protocol buffer.
-
-    Args:
-      proto: Protocol buffer holding ConvectionDiffusion parameters.
-
-    Returns:
-      ConvectionDiffusion object initialized from the protobuf.
-    """
-    diffusion_const = proto.diffusion_const
-    return cls(diffusion_const)
+    D = self.diffusion_coefficient  # pylint: disable=invalid-name
+    N = 2  # pylint: disable=invalid-name
+    dx = grid.step
+    advect_limit = max_velocity * dx
+    max_step = min(advect_limit, dx**2 / (2**N * D)) if D else advect_limit
+    return self.cfl_safety_factor * max_step
 
 
-class ConstantVelocityConvectionDiffusion(ConvectionDiffusion):
-  """Class implementing advection-diffusion with in-state velocity field."""
+def max_stable_diffusion(grid: grids.Grid, max_velocity: float = 1.0) -> float:
+  """How much diffusion can be added without decreasing the time step?"""
+  N = 2  # pylint: disable=invalid-name
+  dx = grid.step
+  advect_limit = max_velocity * dx
+  return (dx ** 2 / 2 ** N) / advect_limit
 
-  def __init__(self, velocity_field: Any, diffusion_const: float):
-    """Constructor that implements advection-diffusion interface."""
-    del velocity_field  # Not used by equation that stores V in state.
-    super(ConstantVelocityConvectionDiffusion, self).__init__(diffusion_const)
+
+def upwind_numerical_diffusion(
+    grid: grids.Grid,
+    cfl: float = 0.9,
+    velocity: float = 1.0,
+) -> float:
+  """How much numerical diffusion get added by a first-order upwind scheme?"""
+  # Reference: J. Zhuang et al.: The importance of vertical resolution in the
+  # free troposphere (Equation A11)
+  return (1 - cfl) * velocity * grid.step / 2
+
+
+@equations.register_continuous_equation('advection_diffusion')
+class AdvectionDiffusion(_AdvectionDiffusionBase):
+  """Base class for advection diffusion equations.
+
+  This base class defines the state and common methods.
+
+  Subclasses must implement the time_derivative() method.
+
+  Attributes:
+    diffusion_coefficient: diffusion coefficient.
+    cfl_safety_factor: safety factor by which to reduce the time step from the
+      maximum stable time-step, according to the CFL condition.
+  """
+
+  def __init__(
+      self,
+      diffusion_coefficient: float,
+      cfl_safety_factor: float = 0.9,
+  ):
+    self._diffusion_coefficient = diffusion_coefficient
+    self._cfl_safety_factor = cfl_safety_factor
+
+  @property
+  def diffusion_coefficient(self) -> float:
+    return self._diffusion_coefficient
+
+  @property
+  def cfl_safety_factor(self) -> float:
+    return self._cfl_safety_factor
 
   @classmethod
-  def from_proto(
-      cls,
-      proto: metadata_pb2.ConvectionDiffusionEquation
-  ) -> equations.Equation:
-    """Creates an instance from a protocol buffer.
+  def from_proto(cls, proto: metadata_pb2.AdvectionDiffusionEquation
+                ) -> equations.Equation:
+    """Construct an equation from a protocol buffer."""
+    return cls(proto.diffusion_coefficient, proto.cfl_safety_factor)
 
-    Args:
-      proto: Protocol buffer holding ConstantVelocityConvectionDiffusion data.
+  def to_proto(self) -> metadata_pb2.Equation:
+    """Creates a protocol buffer holding parameters of the equation."""
+    return metadata_pb2.Equation(
+        discretization=dict(
+            name=self.DISCRETIZATION_NAME,
+            method=self.METHOD,
+            monotonic=self.MONOTONIC,
+        ),
+        advection_diffusion=dict(
+            diffusion_coefficient=self.diffusion_coefficient,
+            cfl_safety_factor=self.cfl_safety_factor,
+        ),
+    )
 
-    Returns:
-      ConstantVelocityConvectionDiffusion object initialized from the protobuf.
-    """
-    diffusion_const = proto.diffusion_const
-    return cls(None, diffusion_const)
+
+@equations.register_continuous_equation('advection')
+class Advection(_AdvectionDiffusionBase):
+  """Base class for pure-advection equations."""
+
+  def __init__(self, cfl_safety_factor: float = 0.9):
+    self._cfl_safety_factor = cfl_safety_factor
+
+  @property
+  def diffusion_coefficient(self) -> float:
+    return 0.0
+
+  @property
+  def cfl_safety_factor(self) -> float:
+    return self._cfl_safety_factor
+
+  @classmethod
+  def from_proto(cls, proto: metadata_pb2.AdvectionEquation
+                ) -> equations.Equation:
+    """Construct an equation from a protocol buffer."""
+    return cls(proto.cfl_safety_factor)
+
+  def to_proto(self) -> metadata_pb2.Equation:
+    """Creates a protocol buffer holding parameters of the equation."""
+    return metadata_pb2.Equation(
+        discretization=dict(
+            name=self.DISCRETIZATION_NAME,
+            method=self.METHOD,
+            monotonic=self.MONOTONIC,
+        ),
+        advection=dict(
+            cfl_safety_factor=self.cfl_safety_factor,
+        ),
+    )
 
 
 class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
-  """"Advection diffusion differential equation.
+  """"Finite difference advection-diffusion."""
+  DISCRETIZATION_NAME = 'finite_difference'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+  MONOTONIC = False
 
-  Implements Equation interface for advection diffusion equation using finite
-  difference scheme. The state for this equation consists of concentration.
-  It requires first and second spatial derivatives to produce time derivative.
-  """
-
-  SPATIAL_DERIVATIVES_KEYS = (C_X, C_Y, C_XX, C_YY)
+  STATE_KEYS = (C, VX, VY)
+  CONSTANT_KEYS = (VX, VY)
+  INPUT_KEYS = (VX, VY, C_X, C_Y, C_XX, C_YY)
 
   def time_derivative(
       self,
-      state: Dict[states.StateKey, tf.Tensor],
-      t: float,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
       grid: grids.Grid,
-      spatial_derivatives: Dict[states.StateKey, tf.Tensor]
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns time derivative of the given state.
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
 
-    Computes time derivatives of the state described by PDE using
-    provided spatial derivatives.
+    v_x = inputs[VX]
+    v_y = inputs[VY]
+    c_x = inputs[C_X]
+    c_y = inputs[C_Y]
+    c_xx = inputs[C_XX]
+    c_yy = inputs[C_YY]
 
-    Args:
-      state: Current state of the solution at time t.
-      t: Time at which to evaluate time derivatives.
-      grid: Grid object holding discretization parameters.
-      spatial_derivatives: Requested spatial derivatives.
+    D = self.diffusion_coefficient  # pylint: disable=invalid-name
+    c_t = -(v_x * c_x + v_y * c_y) + D * (c_xx + c_yy)
+    return {C_T: c_t}
 
-    Returns:
-      Time derivative of the state.
-    """
-    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    equations.check_keys(state, self.STATE_KEYS)
-    state_time_derivative = {}
-    v_x = self.velocity_field.get_velocity_x(t, grid)
-    v_y = self.velocity_field.get_velocity_y(t, grid)
 
-    c_x = spatial_derivatives[C_X]
-    c_y = spatial_derivatives[C_Y]
-    c_xx = spatial_derivatives[C_XX]
-    c_yy = spatial_derivatives[C_YY]
+class FiniteDifferenceAdvection(Advection):
+  """"Finite difference scheme for advection only."""
+  DISCRETIZATION_NAME = 'finite_difference'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+  MONOTONIC = False
 
-    state_time_derivative[C_T] = tf.add_n([
-        -1 * v_x * c_x,
-        -1 * v_y * c_y,
-        self.diffusion_const * c_xx,
-        self.diffusion_const * c_yy,
-    ])
-    return state_time_derivative
+  STATE_KEYS = (C, VX, VY)
+  CONSTANT_KEYS = (VX, VY)
+  INPUT_KEYS = (VX, VY, C_X, C_Y)
 
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    return metadata_pb2.Equation(
-        advection_diffusion=dict(
-            diffusion_const=self.diffusion_const,
-            velocity_field=self.velocity_field.to_proto(),
-        ),
-        scheme=metadata_pb2.Equation.FINITE_DIFF
-    )
+  def time_derivative(
+      self,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
+      grid: grids.Grid,
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
+    v_x = inputs[VX]
+    v_y = inputs[VY]
+    c_x = inputs[C_X]
+    c_y = inputs[C_Y]
+    c_t = -(v_x * c_x + v_y * c_y)
+    return {C_T: c_t}
+
+
+def _flux_to_time_derivative(flux_x_edge_x, flux_y_edge_y, grid_step):
+  """Use continuity to convert from fluxes to a time derivative."""
+  # right - left + top - bottom
+  numerator = tf.add_n([
+      flux_x_edge_x,
+      -tensor_ops.roll_2d(flux_x_edge_x, (1, 0)),
+      flux_y_edge_y,
+      -tensor_ops.roll_2d(flux_y_edge_y, (0, 1)),
+  ])
+  return -(1 / grid_step) * numerator
 
 
 class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
-  """Implements finite volume scheme."""
+  """Finite-volume scheme for advection-diffusion."""
 
-  SPATIAL_DERIVATIVES_KEYS = (C_EDGE_X, C_EDGE_Y,
-                              C_X_EDGE_X, C_Y_EDGE_Y)
+  DISCRETIZATION_NAME = 'finite_volume'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  MONOTONIC = False
 
-  def time_derivative(
-      self,
-      state: Dict[states.StateKey, tf.Tensor],
-      t: float,
-      grid: grids.Grid,
-      spatial_derivatives: Dict[states.StateKey, tf.Tensor]
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns time derivative of the given state.
-
-    Computes time derivatives of the state described by PDE using
-    provided spatial derivatives.
-
-    Args:
-      state: Current state of the solution at time t.
-      t: Time at which to evaluate time derivatives.
-      grid: Grid object holding discretization parameters.
-      spatial_derivatives: Requested spatial derivatives.
-
-    Returns:
-      Time derivative of the state.
-    """
-    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    equations.check_keys(state, self.STATE_KEYS)
-    state_time_derivative = {}
-    v_x = self.velocity_field.get_velocity_x(t, grid, shift=(1, 0))
-    v_y = self.velocity_field.get_velocity_y(t, grid, shift=(0, 1))
-
-    c_edge_x = spatial_derivatives[C_EDGE_X]
-    c_edge_y = spatial_derivatives[C_EDGE_Y]
-    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
-
-    # common division by the grid.step is done after aggregation of all fluxes.
-    flux_x_out = -1 * v_x * c_edge_x
-    flux_x_in = (utils.roll_2d(c_edge_x, (1, 0)) *
-                 utils.roll_2d(v_x, (1, 0), (0, 1)))
-
-    flux_y_out = -1 * v_y * c_edge_y
-    flux_y_in = (utils.roll_2d(c_edge_y, (0, 1)) *
-                 utils.roll_2d(v_y, (0, 1), (0, 1)))
-
-    diff_flux_x_in = -1 * utils.roll_2d(c_x_edge_x, (1, 0))
-    diff_flux_x_out = c_x_edge_x
-    diff_flux_y_in = -1 * utils.roll_2d(c_y_edge_y, (0, 1))
-    diff_flux_y_out = c_y_edge_y
-
-    advective_flux = tf.add_n([
-        flux_x_in,
-        flux_x_out,
-        flux_y_in,
-        flux_y_out
-    ])
-
-    diffusive_flux = self.diffusion_const * tf.add_n([
-        diff_flux_x_in,
-        diff_flux_x_out,
-        diff_flux_y_in,
-        diff_flux_y_out
-    ])
-
-    total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[C_T] = total_flux
-    return state_time_derivative
-
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    return metadata_pb2.Equation(
-        advection_diffusion=dict(
-            diffusion_const=self.diffusion_const,
-            velocity_field=self.velocity_field.to_proto(),
-        ),
-        scheme=metadata_pb2.Equation.FINITE_VOLUME
-    )
-
-
-class FiniteVolumeUpwindAdvectionDiffusion(AdvectionDiffusion):
-  """Implements upwind finite volume scheme for advection diffusion equation."""
-
-  SPATIAL_DERIVATIVES_KEYS = (C_X_EDGE_X, C_Y_EDGE_Y)
+  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
+  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
+  INPUT_KEYS = (
+      VX_EDGE_X, VY_EDGE_Y, C_EDGE_X, C_EDGE_Y, C_X_EDGE_X, C_Y_EDGE_Y,
+  )
 
   def time_derivative(
       self,
-      state: Dict[states.StateKey, tf.Tensor],
-      t: float,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
       grid: grids.Grid,
-      spatial_derivatives: Dict[states.StateKey, tf.Tensor]
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns time derivative of the given state.
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
 
-    Computes time derivatives of the state described by advection diffusion
-    equation using given spatial derivatives. Upwind scheme computes fluxes
-    based on the direction of the velocity field, which prevents overestimation
-    of the flux which can lead to negative values.
+    v_x = inputs[VX_EDGE_X]
+    v_y = inputs[VY_EDGE_Y]
+    c_edge_x = inputs[C_EDGE_X]
+    c_edge_y = inputs[C_EDGE_Y]
+    c_x_edge_x = inputs[C_X_EDGE_X]
+    c_y_edge_y = inputs[C_Y_EDGE_Y]
 
-    Args:
-      state: Current state of the solution at time t.
-      t: Time at which to evaluate time derivatives.
-      grid: Grid object holding discretization parameters.
-      spatial_derivatives: Requested spatial derivatives.
-
-    Returns:
-      Time derivative of the state.
-    """
-    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    equations.check_keys(state, self.STATE_KEYS)
-    state_time_derivative = {}
-
-    v_x_right = self.velocity_field.get_velocity_x(t, grid, shift=(1, 0))
-    v_x_left = self.velocity_field.get_velocity_x(t, grid, shift=(-1, 0))
-
-    v_y_top = self.velocity_field.get_velocity_y(t, grid, shift=(0, 1))
-    v_y_bottom = self.velocity_field.get_velocity_y(t, grid, shift=(0, -1))
-
-    c = state[C]
-    c_left = utils.roll_2d(c, (1, 0))
-    c_right = utils.roll_2d(c, (-1, 0))
-    c_top = utils.roll_2d(c, (0, -1))
-    c_bottom = utils.roll_2d(c, (0, 1))
-
-    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
-
-    # common division by the grid.step is done after aggregation of all fluxes.
-    flux_x_right_out = -1 * c * tf.maximum(v_x_right, 0.)
-    flux_x_right_in = c_right * tf.maximum(-v_x_right, 0.)
-
-    flux_x_left_in = c_left * tf.maximum(v_x_left, 0.)
-    flux_x_left_out = -1 * c * tf.maximum(-v_x_left, 0.)
-
-    flux_y_top_out = -1 * c * tf.maximum(v_y_top, 0.)
-    flux_y_top_in = c_top * tf.maximum(-v_y_top, 0.)
-
-    flux_y_bottom_out = -1 * c * tf.maximum(-v_y_bottom, 0.)
-    flux_y_bottom_in = c_bottom * tf.maximum(v_y_bottom, 0.)
-
-    diff_flux_x_left = -1 * utils.roll_2d(c_x_edge_x, (1, 0))
-    diff_flux_x_right = c_x_edge_x
-    diff_flux_y_bottom = -1 * utils.roll_2d(c_y_edge_y, (0, 1))
-    diff_flux_y_top = c_y_edge_y
-
-    advective_flux = tf.add_n([
-        flux_x_right_out,
-        flux_x_right_in,
-        flux_x_left_out,
-        flux_x_left_in,
-        flux_y_top_out,
-        flux_y_top_in,
-        flux_y_bottom_out,
-        flux_y_bottom_in
-    ])
-
-    diffusive_flux = self.diffusion_const * tf.add_n([
-        diff_flux_x_left,
-        diff_flux_x_right,
-        diff_flux_y_top,
-        diff_flux_y_bottom
-    ])
-
-    total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[C_T] = total_flux
-    return state_time_derivative
-
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    return metadata_pb2.Equation(
-        advection_diffusion=dict(
-            diffusion_const=self.diffusion_const,
-            velocity_field=self.velocity_field.to_proto(),
-        ),
-        scheme=metadata_pb2.Equation.UPWIND
-    )
+    D = self.diffusion_coefficient  # pylint: disable=invalid-name
+    flux_x = v_x * c_edge_x - D * c_x_edge_x
+    flux_y = v_y * c_edge_y - D * c_y_edge_y
+    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
+    return {C_T: c_t}
 
 
-class InStateVelocityUpwindAdvectionDiffusion(
-    ConstantVelocityConvectionDiffusion):
-  """Implements upwind finite volume scheme for advection diffusion equation.
+class FiniteVolumeAdvection(Advection):
+  """Finite-volume scheme for advection-diffusion."""
 
-  While being interpreted as convection diffusion equation, this class does not
-  implement time evolution of the velocity field. Used for solving
-  advection-diffusion equation with variable velocity field.
+  DISCRETIZATION_NAME = 'finite_volume'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  MONOTONIC = False
+
+  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
+  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
+  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C_EDGE_X, C_EDGE_Y)
+
+  def time_derivative(
+      self,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
+      grid: grids.Grid,
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
+
+    v_x = inputs[VX_EDGE_X]
+    v_y = inputs[VY_EDGE_Y]
+    c_edge_x = inputs[C_EDGE_X]
+    c_edge_y = inputs[C_EDGE_Y]
+
+    flux_x = v_x * c_edge_x
+    flux_y = v_y * c_edge_y
+    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
+    return {C_T: c_t}
+
+
+class UpwindAdvectionDiffusion(AdvectionDiffusion):
+  """Upwind finite-volume scheme for advection-diffusion."""
+
+  DISCRETIZATION_NAME = 'upwind'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  MONOTONIC = True
+
+  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
+  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
+  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C, C_X_EDGE_X, C_Y_EDGE_Y)
+
+  def time_derivative(
+      self,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
+      grid: grids.Grid,
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
+
+    v_x = inputs[VX_EDGE_X]
+    v_y = inputs[VY_EDGE_Y]
+    c = inputs[C]
+    c_x_edge_x = inputs[C_X_EDGE_X]
+    c_y_edge_y = inputs[C_Y_EDGE_Y]
+
+    c_right = tensor_ops.roll_2d(c, (-1, 0))
+    c_top = tensor_ops.roll_2d(c, (0, -1))
+
+    D = self.diffusion_coefficient  # pylint: disable=invalid-name
+    flux_x = v_x * tf.where(v_x > 0, c, c_right) - D * c_x_edge_x
+    flux_y = v_y * tf.where(v_y > 0, c, c_top) - D * c_y_edge_y
+    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
+    return {C_T: c_t}
+
+
+class UpwindAdvection(Advection):
+  """Upwind finite-volume scheme for advection only."""
+
+  DISCRETIZATION_NAME = 'upwind'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  MONOTONIC = True
+
+  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
+  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
+  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C)
+
+  def time_derivative(
+      self,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
+      grid: grids.Grid,
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
+
+    v_x = inputs[VX_EDGE_X]
+    v_y = inputs[VY_EDGE_Y]
+    c = inputs[C]
+
+    c_right = tensor_ops.roll_2d(c, (-1, 0))
+    c_top = tensor_ops.roll_2d(c, (0, -1))
+
+    flux_x = v_x * tf.where(v_x > 0, c, c_right)
+    flux_y = v_y * tf.where(v_y > 0, c, c_top)
+    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
+    return {C_T: c_t}
+
+
+def _minimum(*args):
+  return functools.reduce(tf.minimum, args)
+
+
+def _maximum(*args):
+  return functools.reduce(tf.maximum, args)
+
+
+def _tendency_vanleer_1d(c, v, dx, dt, axis, c_x=None, diffusion_coefficient=0):
+  """Calculate the tendency in a single direction."""
+
+  # To match our indexing convention with the paper, note:
+  # - concentration c is defined at locations i+1/2
+  # - velocity v is defined at locations i+1
+  # - c_x is defined at locations i+1
+
+  def roll_minus_one(array):
+    return tensor_ops.roll(array, 1, axis)
+
+  def roll_plus_one(array):
+    return tensor_ops.roll(array, -1, axis)
+
+  # c is defined at i+1/2
+  c_left = roll_minus_one(c)  # i-1/2
+  c_right = roll_plus_one(c)  # i+3/2
+
+  delta = c - c_left  # i
+  delta_average = 0.5 * (delta + roll_plus_one(delta))  # i+1/2
+
+  # all defined at i+1/2
+  c_min = _minimum(c_left, c, c_right)
+  c_max = _maximum(c_left, c, c_right)
+  mismatch = tf.sign(delta_average) * _minimum(
+      abs(delta_average), 2 * (c - c_min), 2 * (c_max - c))
+
+  # all defined at i+1
+  # in the paper's notation: (1/2) * (1 -/+ C_{-/+})
+  correction = 0.5 - abs(v) * (0.5 * dt / dx)
+  flux_minus = v * (c + mismatch * correction)
+  flux_plus = v * (c_right - roll_plus_one(mismatch) * correction)
+  flux = tf.where(v >= 0, flux_minus, flux_plus)
+
+  if diffusion_coefficient:
+    if c_x is None:
+      raise ValueError('must provide c_x if diffusion coefficient is set')
+    flux -= diffusion_coefficient * c_x
+
+  # defined at i+1/2
+  return -(dt / dx) * (flux - roll_minus_one(flux))
+
+
+class VanLeerMono5AdvectionDiffusion(AdvectionDiffusion):
+  """Second order upwind finite-volume scheme for advection-diffusion.
+
+  Adapted from the "mono-5" limiter from
+  Lin, S.-J., et al. (1994). "A class of the van Leer-type transport schemes
+  and its application to the moisture transport in a general circulation
+  model."
   """
 
-  SPATIAL_DERIVATIVES_KEYS = (C_X_EDGE_X, C_Y_EDGE_Y)
+  DISCRETIZATION_NAME = 'van_leer_mono5'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  MONOTONIC = True
 
-  def time_derivative(
+  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
+  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
+  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C, C_X_EDGE_X, C_Y_EDGE_Y)
+
+  def take_time_step(
       self,
-      state: Dict[states.StateKey, tf.Tensor],
-      t: float,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
       grid: grids.Grid,
-      spatial_derivatives: Dict[states.StateKey, tf.Tensor]
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns time derivative of the given state.
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
 
-    Computes time derivatives of the state described by advection diffusion
-    equation using given spatial derivatives. Upwind scheme computes fluxes
-    based on the direction of the velocity field, which prevents overestimation
-    of the flux which can lead to negative values.
+    v_x = inputs[VX_EDGE_X]
+    v_y = inputs[VY_EDGE_Y]
+    c = inputs[C]
+    c_x = inputs[C_X_EDGE_X]
+    c_y = inputs[C_Y_EDGE_Y]
 
-    Args:
-      state: Current state of the solution at time t.
-      t: Time at which to evaluate time derivatives.
-      grid: Grid object holding discretization parameters.
-      spatial_derivatives: Requested spatial derivatives.
-
-    Returns:
-      Time derivative of the state.
-    """
-    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    equations.check_keys(state, self.STATE_KEYS)
-    state_time_derivative = {}
-
-    v_x_right = state[VX]
-    v_x_left = utils.roll_2d(v_x_right, (1, 0))
-
-    v_y_top = state[VY]
-    v_y_bottom = utils.roll_2d(v_y_top, (0, 1))
-
-    c = state[C]
-    c_left = utils.roll_2d(c, (1, 0))
-    c_right = utils.roll_2d(c, (-1, 0))
-    c_top = utils.roll_2d(c, (0, -1))
-    c_bottom = utils.roll_2d(c, (0, 1))
-
-    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
-
-    flux_x_right_out = -1 * c * tf.maximum(v_x_right, 0.)
-    flux_x_right_in = c_right * tf.maximum(-v_x_right, 0.)
-
-    flux_x_left_in = c_left * tf.maximum(v_x_left, 0.)
-    flux_x_left_out = -1 * c * tf.maximum(-v_x_left, 0.)
-
-    flux_y_top_out = -1 * c * tf.maximum(v_y_top, 0.)
-    flux_y_top_in = c_top * tf.maximum(-v_y_top, 0.)
-
-    flux_y_bottom_out = -1 * c * tf.maximum(-v_y_bottom, 0.)
-    flux_y_bottom_in = c_bottom * tf.maximum(v_y_bottom, 0.)
-
-    diff_flux_x_left = -1 * utils.roll_2d(c_x_edge_x, (1, 0))
-    diff_flux_x_right = c_x_edge_x
-    diff_flux_y_bottom = -1 * utils.roll_2d(c_y_edge_y, (0, 1))
-    diff_flux_y_top = c_y_edge_y
-
-    advective_flux = tf.add_n([
-        flux_x_right_out,
-        flux_x_right_in,
-        flux_x_left_out,
-        flux_x_left_in,
-        flux_y_top_out,
-        flux_y_top_in,
-        flux_y_bottom_out,
-        flux_y_bottom_in
-    ])
-
-    diffusive_flux = self.diffusion_const * tf.add_n([
-        diff_flux_x_left,
-        diff_flux_x_right,
-        diff_flux_y_top,
-        diff_flux_y_bottom
-    ])
-
-    total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[C_T] = total_flux
-    state_time_derivative[VX_T] = tf.zeros_like(v_x_left)
-    state_time_derivative[VY_T] = tf.zeros_like(v_y_top)
-    return state_time_derivative
-
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    return metadata_pb2.Equation(
-        in_state_velocity_advection_diffusion=dict(
-            diffusion_const=self.diffusion_const,
-        ),
-        scheme=metadata_pb2.Equation.UPWIND
-    )
+    dx = dy = grid.step
+    dt = self.get_time_step(grid)
+    D = self.diffusion_coefficient  # pylint: disable=invalid-name
+    x_axis = -2
+    y_axis = -1
+    tendency_x_then_y = _tendency_vanleer_1d(
+        c + 0.5 * _tendency_vanleer_1d(c, v_x, dx, dt, x_axis, c_x, D),
+        v_y, dy, dt, y_axis, c_y, D)
+    tendency_y_then_x = _tendency_vanleer_1d(
+        c + 0.5 * _tendency_vanleer_1d(c, v_y, dy, dt, y_axis, c_y, D),
+        v_x, dx, dt, x_axis, c_x, D)
+    c_next = tf.add_n([state[C], tendency_x_then_y, tendency_y_then_x])
+    return {C: c_next}
 
 
-class InStateVelocityFiniteVolumeAdvectionDiffusion(
-    ConstantVelocityConvectionDiffusion):
-  """Implements finite volume scheme for advection diffusion equation.
+class VanLeerMono5Advection(Advection):
+  """Second order upwind finite-volume scheme for advection only.
 
-  This class correctly inherits ConvectionDiffusion base class, as it allows
-  to train on an ensemble of velocity fields. This is achieved by keeping
-  the velocity field as a part of the state. Time derivatives of the velocity
-  fields are set to 0.
+  Based on the "mono-5" limiter from
+  Lin, S.-J., et al. (1994). "A class of the van Leer-type transport schemes
+  and its application to the moisture transport in a general circulation
+  model."
   """
 
-  SPATIAL_DERIVATIVES_KEYS = (C_EDGE_X, C_EDGE_Y,
-                              C_X_EDGE_X, C_Y_EDGE_Y)
+  DISCRETIZATION_NAME = 'van_leer_mono5'
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  MONOTONIC = True
 
-  def time_derivative(
+  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
+  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
+  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C)
+
+  def take_time_step(
       self,
-      state: Dict[states.StateKey, tf.Tensor],
-      t: float,
+      state: KeyedTensors,
+      inputs: KeyedTensors,
       grid: grids.Grid,
-      spatial_derivatives: Dict[states.StateKey, tf.Tensor]
-  ) -> Dict[states.StateKey, tf.Tensor]:
-    """Returns time derivative of the given state.
+      time: float = 0.0,
+  ) -> KeyedTensors:
+    """See base class."""
+    del time  # unused
+    equations.check_keys(inputs, self.INPUT_KEYS)
 
-    Computes time derivatives of the state described by advection diffusion
-    equation using given spatial derivatives. Upwind scheme computes fluxes
-    based on the direction of the velocity field, which prevents overestimation
-    of the flux which can lead to negative values. Time derivatives of velocity
-    components are set to zero, as advection equation does not evolve them.
+    v_x = inputs[VX_EDGE_X]
+    v_y = inputs[VY_EDGE_Y]
+    c = inputs[C]
 
-    Args:
-      state: Current state of the solution at time t.
-      t: Time at which to evaluate time derivatives.
-      grid: Grid object holding discretization parameters.
-      spatial_derivatives: Requested spatial derivatives.
-
-    Returns:
-      Time derivative of the state.
-    """
-    equations.check_keys(spatial_derivatives, self.SPATIAL_DERIVATIVES_KEYS)
-    equations.check_keys(state, self.STATE_KEYS)
-    state_time_derivative = {}
-
-    v_x = state[VX]
-    v_y = state[VY]
-    c_edge_x = spatial_derivatives[C_EDGE_X]
-    c_edge_y = spatial_derivatives[C_EDGE_Y]
-    c_x_edge_x = spatial_derivatives[C_X_EDGE_X]
-    c_y_edge_y = spatial_derivatives[C_Y_EDGE_Y]
-
-    flux_x_out = -1 * v_x * c_edge_x
-    flux_x_in = (utils.roll_2d(c_edge_x, (1, 0)) *
-                 utils.roll_2d(v_x, (1, 0)))
-
-    flux_y_out = -1 * v_y * c_edge_y
-    flux_y_in = (utils.roll_2d(c_edge_y, (0, 1)) *
-                 utils.roll_2d(v_y, (0, 1)))
-
-    diff_flux_x_in = -1 * utils.roll_2d(c_x_edge_x, (1, 0))
-    diff_flux_x_out = c_x_edge_x
-    diff_flux_y_in = -1 * utils.roll_2d(c_y_edge_y, (0, 1))
-    diff_flux_y_out = c_y_edge_y
-
-    advective_flux = tf.add_n([
-        flux_x_in,
-        flux_x_out,
-        flux_y_in,
-        flux_y_out
-    ])
-
-    diffusive_flux = self.diffusion_const * tf.add_n([
-        diff_flux_x_in,
-        diff_flux_x_out,
-        diff_flux_y_in,
-        diff_flux_y_out
-    ])
-
-    total_flux = (advective_flux + diffusive_flux) / grid.step
-    state_time_derivative[C_T] = total_flux
-    state_time_derivative[VX_T] = tf.zeros_like(v_x)
-    state_time_derivative[VY_T] = tf.zeros_like(v_y)
-    return state_time_derivative
-
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    return metadata_pb2.Equation(
-        in_state_velocity_advection_diffusion=dict(
-            diffusion_const=self.diffusion_const,
-        ),
-        scheme=metadata_pb2.Equation.FINITE_VOLUME
-    )
+    dx = dy = grid.step
+    dt = self.get_time_step(grid)
+    x_axis = -2
+    y_axis = -1
+    tendency_x_then_y = _tendency_vanleer_1d(
+        c + 0.5 * _tendency_vanleer_1d(c, v_x, dx, dt, axis=x_axis),
+        v_y, dy, dt, axis=y_axis)
+    tendency_y_then_x = _tendency_vanleer_1d(
+        c + 0.5 * _tendency_vanleer_1d(c, v_y, dy, dt, axis=y_axis),
+        v_x, dx, dt, axis=x_axis)
+    c_next = tf.add_n([state[C], tendency_x_then_y, tendency_y_then_x])
+    return {C: c_next}
 
 
-def _fourier_terms(
-    rnd_gen: np.random.RandomState,
+def random_fourier_series(
     grid: grids.Grid,
-    num_fourier_terms: int,
-    max_fourier_periods: int,
-    lower_bound: float = 1e-3
+    size: Shape = (),
+    seed: int = None,
+    num_terms: int = 5,
+    max_periods: int = 4,
+    normalize: bool = True,
+    lower_bound: float = 1e-3,
+    upper_bound: float = 1.0,
 ) -> np.ndarray:
-  """Generates a normalized distribution of truncated Fourier harmonics."""
-  x, y = grid.get_mesh()
-  distribution = np.zeros(grid.get_shape())
-  for _ in range(num_fourier_terms):
-    amplitude = rnd_gen.random_sample()
-    phase = rnd_gen.random_sample()
-    kx = (rnd_gen.randint(-max_fourier_periods, max_fourier_periods + 1) *
-          2 * np.pi / grid.length_x)
-    ky = (rnd_gen.randint(-max_fourier_periods, max_fourier_periods + 1) *
-          2 * np.pi / grid.length_y)
-    distribution += amplitude * np.sin(kx * x + ky * y + phase)
+  """Generates a distribution of truncated Fourier harmonics.
 
-  min_value = np.min(distribution)
-  distribution += lower_bound - min_value
-  max_amplitude = np.max(distribution)
-  distribution /= max_amplitude
+  Args:
+    grid: grid on which initial conditions are evaluated.
+    size: leading "batch" dimensions to include on output tensors.
+    seed: random seed to use for random number generator.
+    num_terms: number of random fourier terms.
+    max_periods: maximum number of x/y periods for fourier terms.
+    normalize: if true, normalize the values to fall within the range
+      [lower_bound, upper_bound].
+    lower_bound: lower bound for values.
+    upper_bound: upper bound for values.
+
+  Returns:
+    Float64 array of shape size+grid.shape.
+  """
+  if isinstance(size, int):
+    size = (size,)
+
+  random = np.random.RandomState(seed=seed)
+
+  # dimensions [..., 1, 1, term]
+  event_shape = size + (1, 1, num_terms)
+  amplitude = random.random_sample(size=event_shape)
+  kx = random.randint(-max_periods, max_periods + 1, size=event_shape)
+  ky = random.randint(-max_periods, max_periods + 1, size=event_shape)
+  phase = random.random_sample(size=event_shape)
+
+  # dimensions [..., x, y, 1]
+  x, y = grid.get_mesh()
+  x = x.reshape((1,) * len(size) + x.shape + (1,))
+  y = y.reshape((1,) * len(size) + y.shape + (1,))
+
+  # dimensions [..., x, y, term]
+  terms = amplitude * np.sin(
+      2 * np.pi * (kx * x / grid.length_x + ky * y / grid.length_y + phase))
+  # dimensions [..., x, y]
+  distribution = np.sum(terms, axis=-1)
+
+  if normalize:
+    distribution_range = (
+        distribution.max(axis=(-1, -2), keepdims=True) - distribution.min(
+            axis=(-1, -2), keepdims=True))
+    scale = (upper_bound - lower_bound) / distribution_range
+    distribution = scale * distribution + lower_bound
+
   return distribution
 
 
-def generate_random_fourier_terms(
-    batch_size: int,
-    rnd_gen: np.random.RandomState,
-    grid: grids.Grid,
-    num_fourier_terms: int = 5,
-    max_fourier_periods: int = 3,
-    lower_bound: float = 1e-3,
-    **kwargs: Any
-) -> np.ndarray:
-  """Generates a batch of random initial conditions with Fourier modes.
-
-  Generates random Fourier terms truncated at max_fourier_periods.
-  Distribution is periodic in x and y directions. A constant is added to make
-  distribution strictly positive (no negative mass). The result is normalized
-  to be in range [lower_bound, 1.].
-
-  Args:
-    batch_size: Size of the batch dimension.
-    rnd_gen: Random number generator to be used for generation of components.
-    grid: Grid on which initial conditions are evaluated.
-    num_fourier_terms: Number of harmonic terms to generate.
-    max_fourier_periods: Number of full periods that can appear across the grid.
-    lower_bound: Lower bound for concentration, must be positive.
-    **kwargs: Parameters that are passed to other initialization methods.
-
-  Returns:
-    Harmonic initial conditions array of shape=[grid.size_x, grid.size_y]
-    and dtype=float64.
-
-  Raises:
-    ValueError: lower bound can't be negative.
-  """
-  del kwargs  # not used by generate_random_fourier_terms
-  random_fourier_modes = [
-      _fourier_terms(rnd_gen, grid, num_fourier_terms,
-                     max_fourier_periods, lower_bound)
-      for _ in range(batch_size)
-  ]
-  return np.stack(random_fourier_modes)
-
-
-def generate_fourier_terms(
-    batch_size: int,
-    grid: grids.Grid,
-    num_fourier_terms: int = 5,
-    max_fourier_periods: int = 3,
-    lower_bound: float = 1e-3,
-    seed: int = 1,
-    **kwargs: Any
-) -> np.ndarray:
-  """Generates a batch of initial conditions with Fourier modes.
-
-  Generates an ensemble of Fourier terms truncated at max_fourier_periods.
-  Distribution is periodic in x and y directions. A constant is added to make
-  distribution strictly positive (no negative mass). The result is normalized
-  to be in range [lower_bound, 1.].
-
-  Args:
-    batch_size: Size of the batch dimension.
-    grid: Grid on which initial conditions are evaluated.
-    num_fourier_terms: Number of harmonic terms to generate.
-    max_fourier_periods: Number of full periods that can appear across the grid.
-    lower_bound: Lower bound for concentration, must be positive.
-    seed: Seed to initialize random number generator.
-    **kwargs: Parameters that are passed to other initialization methods.
-
-
-  Returns:
-    Harmonic initial conditions array of shape=[grid.size_x, grid.size_y]
-    and dtype=float64.
-
-  Raises:
-    ValueError: lower bound can't be negative.
-  """
-  del kwargs  # not used by generate_fourier_terms
-  rnd_gen = np.random.RandomState(seed=seed)
-  return generate_random_fourier_terms(
-      batch_size, rnd_gen, grid, num_fourier_terms,
-      max_fourier_periods, lower_bound)
-
-
 def _gaussian(
-    x: float,
-    y: float,
-    x_position: float,
-    y_position: float,
-    gaussian_width: float) -> np.ndarray:
+    x: ArrayLike,
+    y: ArrayLike,
+    x_position: ArrayLike,
+    y_position: ArrayLike,
+    gaussian_width: ArrayLike,
+) -> np.ndarray:
   """Generates a gaussian distribution at given location with given width."""
-  return np.exp(-((x - x_position) / gaussian_width) ** 2 +
-                -((y - y_position) / gaussian_width) ** 2)
+  position_shape = (
+      getattr(x_position, 'shape', ()) + (1,) * len(getattr(x, 'shape', ())))
+  x_position = np.reshape(x_position, position_shape)
+  y_position = np.reshape(y_position, position_shape)
+  return np.exp(-((x - x_position) / gaussian_width)**2 + -(
+      (y - y_position) / gaussian_width)**2)
 
 
-def _symmetrized_gaussian(
+def symmetrized_gaussian(
     grid: grids.Grid,
-    x_position: float,
-    y_position: float,
-    gaussian_width: float = None
+    x_position: ArrayLike,
+    y_position: ArrayLike,
+    gaussian_width: ArrayLike,
 ) -> np.ndarray:
   """Generates a gaussian distribution at given location with periodic BC.
 
@@ -1002,143 +754,42 @@ def _symmetrized_gaussian(
     Gaussian distribution on mesh of shape=[grid.size_x, grid.size_y].
   """
   x, y = grid.get_mesh()
-  distribution = np.zeros(grid.get_shape())
+  distribution = 0  # type: np.ndarray
   for i in range(-1, 2):
     for j in range(-1, 2):
-      distribution += _gaussian(x + np.max(x) * i, y + np.max(y) * j,
+      distribution += _gaussian(x + grid.length_x * i, y + grid.length_y * j,
                                 x_position, y_position, gaussian_width)
   return distribution
 
 
-def generate_gaussian(
-    batch_size: int,
+def random_sum_of_gaussians(
     grid: grids.Grid,
-    x_position: float = np.pi,
-    y_position: float = np.pi,
-    gaussian_width: float = 0.1,
-    **kwargs: Any
+    size: Shape = (),
+    seed: int = None,
+    num_terms: int = 1,
+    gaussian_width: float = 0.5,
+    normalize: bool = True,
 ) -> np.ndarray:
-  """Generates initial conditions with specified gaussian distribution.
+  """Generate a random sum of gaussians on a grid.
 
   Args:
-    batch_size: Size of the batch dimension.
-    grid: Grid on which initial conditions are evaluated.
-    x_position: X coordinate of the center of the gaussian.
-    y_position: Y coordinate of the center of the gaussian.
-    gaussian_width: Width of the gaussian measured in units of x.
-    **kwargs: Parameters that are passed to other initialization methods.
+    grid: grid on which initial conditions are evaluated.
+    size: leading "batch" dimensions to include on output tensors.
+    seed: random seed to use for random number generator.
+    gaussian_width: width of the gaussian measured in units of x.
+    normalize: if true, normalize the maximum value to one.
 
   Returns:
-    Initial conditions array of shape=[grid.size_x, grid.size_y]
-    and dtype=float64.
+    Float64 array of shape size+get.shape.
   """
-  del kwargs  # not used by generate_gaussian
-  batch = [
-      _symmetrized_gaussian(grid, x_position, y_position, gaussian_width)
-      for _ in range(batch_size)
-  ]
-  return np.stack(batch)
-
-
-def _symmetrized_gaussians(
-    rnd_gen: np.random.RandomState,
-    grid: grids.Grid,
-    num_gaussian_terms: int,
-    gaussian_width: float
-) -> np.ndarray:
-  """Generates a composition of randomly distributed gaussian distributions.
-
-  Args:
-    rnd_gen: Random number generator for position of gaussians.
-    grid: Grid on which initial conditions are evaluated.
-    num_gaussian_terms: Number of gaussian terms to generate.
-    gaussian_width: Width of the gaussian in units of x.
-
-  Returns:
-    Composition of randomly distributed gaussian distributions with max value
-    normalized to 1.
-  """
-  x, y = grid.get_mesh()
-  distribution = np.zeros(grid.get_shape())
-  for _ in range(num_gaussian_terms):
-    x_pos = rnd_gen.random_sample() * np.max(x)
-    y_pos = rnd_gen.random_sample() * np.max(y)
-    distribution += _symmetrized_gaussian(grid, x_pos, y_pos, gaussian_width)
-  max_value = np.max(distribution)
-  distribution /= max_value
+  random = np.random.RandomState(seed)
+  if isinstance(size, int):
+    size = (size,)
+  size = (num_terms,) + size
+  x_pos = random.random_sample(size) * grid.length_x
+  y_pos = random.random_sample(size) * grid.length_y
+  distribution = symmetrized_gaussian(grid, x_pos, y_pos, gaussian_width)
+  distribution = distribution.sum(axis=0)
+  if normalize:
+    distribution /= distribution.max(axis=(-2, -1), keepdims=True)
   return distribution
-
-
-def generate_random_gaussians(
-    batch_size: int,
-    rnd_gen: np.random.RandomState,
-    grid: grids.Grid,
-    num_gaussian_terms: int = 1,
-    gaussian_width: float = 0.1,
-    **kwargs: Any
-) -> np.ndarray:
-  """Generates a batch of initial conditions with random gaussians.
-
-  Generates a batch of randomly placed guassian distribution that are
-  symmetrized with respect to boundary conditions. This avoids sharp accidental
-  sharp gradients.
-
-  Args:
-    batch_size: Size of the batch dimension.
-    rnd_gen: Random number generator for position of gaussians.
-    grid: Grid on which initial conditions are evaluated.
-    num_gaussian_terms: Number of gaussian terms to generate.
-    gaussian_width: Width of the gaussian in units of x.
-    **kwargs: Parameters that are passed to other initialization methods.
-
-  Returns:
-    Initial conditions with randomly placed gaussians.
-  """
-  del kwargs  # not used by generate_random_gaussians
-  batch = [
-      _symmetrized_gaussians(rnd_gen, grid, num_gaussian_terms, gaussian_width)
-      for _ in range(batch_size)
-  ]
-  return np.stack(batch)
-
-
-EQUATION_TYPES = {
-    ('advection_diffusion', metadata_pb2.Equation.FINITE_DIFF):
-        FiniteDifferenceAdvectionDiffusion,
-    ('advection_diffusion', metadata_pb2.Equation.FINITE_VOLUME):
-        FiniteVolumeAdvectionDiffusion,
-    ('advection_diffusion', metadata_pb2.Equation.UPWIND):
-        FiniteVolumeUpwindAdvectionDiffusion,
-    ('in_state_velocity_advection_diffusion',
-     metadata_pb2.Equation.FINITE_VOLUME):
-        InStateVelocityFiniteVolumeAdvectionDiffusion,
-    ('in_state_velocity_advection_diffusion',
-     metadata_pb2.Equation.UPWIND):
-        InStateVelocityUpwindAdvectionDiffusion
-}
-
-
-def equation_from_proto(proto: metadata_pb2.Equation, scheme: str = None):
-  """Constructs an equation from the Equation protocol buffer.
-
-  Args:
-    proto: Equation protocol buffer encoding the Equation.
-    scheme: Override to the scheme of the equation. Needed for testing
-        different implementation in training and evaluation.
-
-  Returns:
-    Equation object.
-
-  Raises:
-    ValueError: Provided protocol buffer was not recognized, check proto names.
-  """
-  if scheme is None:
-    scheme = proto.scheme
-  else:
-    scheme = metadata_pb2.Equation.DiscretizationScheme.Value(scheme)
-  equation_and_scheme = (proto.WhichOneof('continuous_equation'), scheme)
-  if equation_and_scheme in EQUATION_TYPES:
-    eq_proto = getattr(proto, proto.WhichOneof('continuous_equation'))
-    return EQUATION_TYPES[equation_and_scheme].from_proto(eq_proto)
-
-  raise ValueError('Equation protocol buffer is not recognized')

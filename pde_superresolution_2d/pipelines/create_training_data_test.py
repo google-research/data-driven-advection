@@ -21,17 +21,29 @@ import os.path
 
 from absl import flags
 from absl.testing import flagsaver
-from pde_superresolution_2d.advection import create_training_data
+from absl.testing import parameterized
+from pde_superresolution_2d.core import builders
+from pde_superresolution_2d.pipelines import create_training_data
 from tensorflow import gfile
 from absl.testing import absltest
 
-
 FLAGS = flags.FLAGS
 
+EQUATION_KWARGS = {
+    'advection_diffusion': {
+        'diffusion_coefficient': 0.005,
+        'cfl_safety_factor': 0.9,
+    },
+    'saint_venant': {},
+}
 
-class CreateTrainingDataTest(absltest.TestCase):
 
-  def test(self):
+class CreateTrainingDataTest(parameterized.TestCase):
+
+  @parameterized.parameters(*((equation_name, dataset_type)
+                              for dataset_type in builders.DATASET_TYPES
+                              for equation_name in EQUATION_KWARGS))
+  def test(self, equation_name, dataset_type):
     output_path = FLAGS.test_tmpdir
     output_name = 'temp'
     shards = 1
@@ -40,10 +52,14 @@ class CreateTrainingDataTest(absltest.TestCase):
     with flagsaver.flagsaver(
         dataset_path=output_path,
         dataset_name=output_name,
+        dataset_type=dataset_type,
+        equation_name=equation_name,
+        equation_kwargs=str(EQUATION_KWARGS[equation_name]),
         num_shards=shards,
-        max_time=0.03,
-        num_time_slices=10,
-        num_samples=2):
+        total_time_steps=10,
+        example_time_steps=3,
+        time_step_interval=5,
+        num_seeds=2):
       create_training_data.main([])
 
     # verify that file was written

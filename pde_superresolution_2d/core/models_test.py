@@ -18,195 +18,240 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from absl import flags
+from absl.testing import flagsaver
+from absl.testing import parameterized
 import numpy as np
-from pde_superresolution_2d.advection import equations as advection_equations
-from pde_superresolution_2d.advection import velocity_fields
+from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import readers
 from pde_superresolution_2d.core import states
-from pde_superresolution_2d.core import utils
+from pde_superresolution_2d.core import tensor_ops
+from pde_superresolution_2d.pipelines import create_training_data
 import tensorflow as tf
 
 from absl.testing import absltest
 
+FLAGS = flags.FLAGS
 
-class RollFiniteDifferenceModelTest(absltest.TestCase):
-  """Tests for RollFiniteDifference model."""
+nest = tf.contrib.framework.nest
 
-  def setUp(self):
-    length = 2 * np.pi
-    size = 200
-    step = length / size
-    self.grid = grids.Grid(size, size, step)
-    self.model = models.RollFiniteDifferenceModel()
 
-  def test_roll_method(self):
-    """Tests the roll method used for finite differences."""
-    inputs_value = [[[1, 2, 3], [4, 5, 6], [7, 8, 9]]]
-    roll_x_expected_result = [[[7, 8, 9], [1, 2, 3], [4, 5, 6]]]
-    roll_y_expected_result = [[[3, 1, 2], [6, 4, 5], [9, 7, 8]]]
-    with tf.Graph().as_default():
-      inputs = tf.constant(inputs_value, dtype=tf.float64)
-      roll_x_result = utils.roll_2d(inputs, (1, 0))
-      roll_y_result = utils.roll_2d(inputs, (0, 1))
-      with tf.Session():
-        np.testing.assert_allclose(roll_x_result.eval(), roll_x_expected_result)
-        np.testing.assert_allclose(roll_y_result.eval(), roll_y_expected_result)
+# Use eager mode by default
+tf.enable_eager_execution()
 
-  def test_spatial_derivatives(self):
-    """Test that finite difference derivatives are close to true derivatives."""
-    derivative_keys = (
-        advection_equations.C,
-        advection_equations.C_X,
-        advection_equations.C_XX,
-        advection_equations.C_Y,
-        advection_equations.C_YY,
-        advection_equations.C_X_EDGE_X,
-        advection_equations.C_Y_EDGE_Y
-    )
 
-    x, y = self.grid.get_mesh()
-    x_shifted_x, x_shifted_y = self.grid.get_mesh((1, 0))
-    y_shifted_x, y_shifted_y = self.grid.get_mesh((0, 1))
-    amplitudes = (0.15, 0.76, 1.213)
-    wavelengths_x = (2, 3, 1)
-    wavelengths_y = (3, 1, 2)
-    phase_offsets = (0.123, 2.543, 1.734)
-    exact_values = {key: 0 for key in derivative_keys}
-    for i in range(len(amplitudes)):
-      kx = wavelengths_x[i]
-      ky = wavelengths_y[i]
-      phi = phase_offsets[i]
-      ampl = amplitudes[i]
-      center_phase = kx * x + ky * y + phi
-      x_edge_phase = kx * x_shifted_x + ky * x_shifted_y + phi
-      y_edge_phase = kx * y_shifted_x + ky * y_shifted_y + phi
+C = states.StateKey('concentration', (0, 0, 0), (0, 0))
+C_EDGE_X = states.StateKey('concentration', (0, 0, 0), (1, 0))
+C_EDGE_Y = states.StateKey('concentration', (0, 0, 0), (0, 1))
+C_X = states.StateKey('concentration', (1, 0, 0), (0, 0))
+C_Y = states.StateKey('concentration', (0, 1, 0), (0, 0))
+C_X_EDGE_X = states.StateKey('concentration', (1, 0, 0), (1, 0))
+C_Y_EDGE_Y = states.StateKey('concentration', (0, 1, 0), (0, 1))
+C_XX = states.StateKey('concentration', (2, 0, 0), (0, 0))
+C_YY = states.StateKey('concentration', (0, 2, 0), (0, 0))
 
-      exact_values[advection_equations.C] += ampl * np.sin(center_phase)
-      exact_values[advection_equations.C_X] += ampl * kx * np.cos(center_phase)
-      exact_values[advection_equations.C_Y] += ampl * ky * np.cos(center_phase)
-      exact_values[advection_equations.C_XX] -= ampl * kx * kx * np.sin(center_phase)
-      exact_values[advection_equations.C_YY] -= ampl * ky * ky * np.sin(center_phase)
-      exact_values[advection_equations.C_X_EDGE_X] += ampl * kx * np.cos(x_edge_phase)
-      exact_values[advection_equations.C_Y_EDGE_Y] += ampl * ky * np.cos(y_edge_phase)
 
-    for key in exact_values.keys():
-      exact_values[key] = np.expand_dims(exact_values[key], axis=0)
+class FiniteDifferenceModelTest(parameterized.TestCase):
 
-    distribution = exact_values[advection_equations.C]
-    with tf.Graph().as_default():
-      state_tensor = tf.constant(distribution, dtype=tf.float64)
-      state = {advection_equations.C: state_tensor}
-      spatial_derivatives = self.model.state_derivatives(
-          state, 0, self.grid, derivative_keys)
-      with tf.Session() as sess:
-        derivatives_values = sess.run(spatial_derivatives)
+  @parameterized.parameters(
+      dict(model_cls=models.FiniteDifferenceModel, model_kwargs={}),
+      dict(model_cls=models.LinearModel,
+           model_kwargs=dict(constrained_accuracy_order=0)),
+      dict(model_cls=models.LinearModel,
+           model_kwargs=dict(constrained_accuracy_order=1)),
+      dict(model_cls=models.PseudoLinearModel,
+           model_kwargs=dict(constrained_accuracy_order=0)),
+      dict(model_cls=models.PseudoLinearModel,
+           model_kwargs=dict(constrained_accuracy_order=1)),
+  )
+  def test_from_centered(self, model_cls, model_kwargs):
 
-    for key in derivatives_values.keys():
+    class Equation(equations.Equation):
+      STATE_KEYS = (C,)
+      INPUT_KEYS = (C, C_EDGE_X, C_EDGE_Y, C_X, C_Y, C_X_EDGE_X,
+                    C_Y_EDGE_Y, C_XX, C_YY)
+      METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+
+    grid = grids.Grid.from_period(10, length=1)
+    equation = Equation()
+    model = model_cls(equation, grid, **model_kwargs)
+
+    inputs = tf.convert_to_tensor(
+        np.random.RandomState(0).random_sample((1,) + grid.shape), tf.float32)
+
+    # create variables, then reset them all to zero
+    model.spatial_derivatives({C: inputs})
+    for variable in model.variables:
+      variable.assign(tf.zeros_like(variable))
+
+    actual_derivatives = model.spatial_derivatives({C: inputs})
+
+    expected_derivatives = {
+        C: inputs,
+        C_EDGE_X: (inputs + tensor_ops.roll_2d(inputs, (-1, 0))) / 2,
+        C_EDGE_Y: (inputs + tensor_ops.roll_2d(inputs, (0, -1))) / 2,
+        C_X: (-tensor_ops.roll_2d(inputs, (1, 0))
+              + tensor_ops.roll_2d(inputs, (-1, 0))) / (2 * grid.step),
+        C_Y: (-tensor_ops.roll_2d(inputs, (0, 1))
+              + tensor_ops.roll_2d(inputs, (0, -1))) / (2 * grid.step),
+        C_X_EDGE_X: (-inputs + tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step,
+        C_Y_EDGE_Y: (-inputs + tensor_ops.roll_2d(inputs, (0, -1))) / grid.step,
+        C_XX: (tensor_ops.roll_2d(inputs, (1, 0))
+               - 2 * inputs
+               + tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step ** 2,
+        C_YY: (tensor_ops.roll_2d(inputs, (0, 1))
+               - 2 * inputs
+               + tensor_ops.roll_2d(inputs, (0, -1))) / grid.step ** 2,
+    }
+
+    for key, expected in sorted(expected_derivatives.items()):
       np.testing.assert_allclose(
-          derivatives_values[key], exact_values[key], atol=1e-2)
+          actual_derivatives[key], expected,
+          atol=1e-5, rtol=1e-5, err_msg=repr(key))
 
-  def test_spatial_derivatives_exceptions(self):
-    """Tests that unsupported requests results in exception."""
-    with tf.Graph().as_default():
-      state_tensor = tf.random_normal(shape=(1, 100, 100), dtype=tf.float64)
-      unsupported_key_a = states.StateKey('pressure', (0, 0), (0, 0))
-      unsupported_key_b = states.StateKey('concentration', (5, 0), (0, 0))
-      unsupported_key_c = states.StateKey('concentration', (1, 0), (1, 0))
-      state = {advection_equations.C: state_tensor}
-      bad_request_a = (unsupported_key_a,)
-      bad_request_b = (unsupported_key_b,)
-      bad_request_c = (unsupported_key_c,)
-      bad_request_d = (advection_equations.C, unsupported_key_c)
-      with self.assertRaises(ValueError):
-        self.model.state_derivatives(state, 0, self.grid, bad_request_a)
-      with self.assertRaises(ValueError):
-        self.model.state_derivatives(state, 0, self.grid, bad_request_b)
-      with self.assertRaises(ValueError):
-        self.model.state_derivatives(state, 0, self.grid, bad_request_c)
-      with self.assertRaises(ValueError):
-        self.model.state_derivatives(state, 0, self.grid, bad_request_d)
+  @parameterized.parameters(
+      dict(model_cls=models.FiniteDifferenceModel, model_kwargs={}),
+      dict(model_cls=models.LinearModel,
+           model_kwargs=dict(constrained_accuracy_order=0)),
+      dict(model_cls=models.LinearModel,
+           model_kwargs=dict(constrained_accuracy_order=1)),
+      dict(model_cls=models.PseudoLinearModel,
+           model_kwargs=dict(constrained_accuracy_order=0)),
+      dict(model_cls=models.PseudoLinearModel,
+           model_kwargs=dict(constrained_accuracy_order=1)),
+  )
+  def test_from_edge(self, model_cls, model_kwargs):
 
-  def test_proto_conversion(self):
-    """Test that the model can be converted to protocol buffer and back."""
-    model_proto = self.model.to_proto()
-    self.assertEqual(model_proto.WhichOneof('model'), 'roll_finite_difference')
-    model_from_proto = models.model_from_proto(model_proto)
-    self.assertIsInstance(model_from_proto, models.RollFiniteDifferenceModel)
+    class Equation(equations.Equation):
+      STATE_KEYS = (C_EDGE_X,)
+      INPUT_KEYS = (C, C_EDGE_X, C_EDGE_Y, C_X, C_X_EDGE_X, C_XX)
+      METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
 
+    grid = grids.Grid.from_period(10, length=1)
+    equation = Equation()
+    model = model_cls(equation, grid, **model_kwargs)
 
-class StencilNetTest(absltest.TestCase):
-  """Tests for StencilNet model."""
+    inputs = tf.convert_to_tensor(
+        np.random.RandomState(0).random_sample((1,) + grid.shape), tf.float32)
 
-  def setUp(self):
-    """Setup testing components."""
-    length = 2 * np.pi
-    size = 200
-    step = length / size
-    self.grid = grids.Grid(size, size, step)
+    # create variables, then reset them all to zero
+    model.spatial_derivatives({C_EDGE_X: inputs})
+    for variable in model.variables:
+      variable.assign(tf.zeros_like(variable))
 
-    num_layers = 2
-    kernel_size = 3
-    num_filters = 16
-    stencil_size = 4
-    input_shift = 0.5
-    input_variance = 4.98
-    self.model = models.StencilNet(num_layers, kernel_size, num_filters,
-                                   stencil_size, input_shift, input_variance)
+    actual_derivatives = model.spatial_derivatives({C_EDGE_X: inputs})
 
-  def test_network_construction(self):
-    """Tests that model generates networks for spatial derivatives."""
-    tf.reset_default_graph()
-    input_state = {advection_equations.C: np.random.random((1,) + self.grid.get_shape())}
-    request = (advection_equations.C_EDGE_X, advection_equations.C_EDGE_Y, advection_equations.C_XX, advection_equations.C_YY)
-    derivs = self.model.state_derivatives(input_state, 0., self.grid, request)
-    with tf.train.MonitoredSession() as sess:
-      derivs_values = sess.run(derivs)
+    expected_derivatives = {
+        C: (tensor_ops.roll_2d(inputs, (1, 0)) + inputs) / 2,
+        C_EDGE_X: inputs,
+        C_EDGE_Y: (
+            inputs
+            + tensor_ops.roll_2d(inputs, (0, -1))
+            + tensor_ops.roll_2d(inputs, (1, 0))
+            + tensor_ops.roll_2d(inputs, (1, -1))
+        ) / 4,
+        C_X: (-tensor_ops.roll_2d(inputs, (1, 0)) + inputs) / grid.step,
+        C_X_EDGE_X: (
+            -tensor_ops.roll_2d(inputs, (1, 0))
+            + tensor_ops.roll_2d(inputs, (-1, 0))) / (2 * grid.step),
+        C_XX: (1/2 * tensor_ops.roll_2d(inputs, (2, 0))
+               - 1/2 * tensor_ops.roll_2d(inputs, (1, 0))
+               - 1/2 * inputs
+               + 1/2 * tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step ** 2,
+    }
 
-    expected_shape = (1,) + self.grid.get_shape()
-    for key in request:
-      self.assertEqual(np.shape(derivs_values[key]), expected_shape)
+    for key, expected in sorted(expected_derivatives.items()):
+      np.testing.assert_allclose(
+          actual_derivatives[key], expected,
+          atol=1e-5, rtol=1e-5, err_msg=repr(key))
 
 
-class StencilVNetTest(absltest.TestCase):
-  """Tests StencilVNet model."""
+class IntegrationTest(parameterized.TestCase):
 
-  def setUp(self):
-    """Setup testing components."""
-    length = 2 * np.pi
-    size = 200
-    step = length / size
-    self.grid = grids.Grid(size, size, step)
+  @classmethod
+  def setUpClass(cls):
+    # create training data
+    output_path = FLAGS.test_tmpdir
+    output_name = 'temp'
+    with flagsaver.flagsaver(
+        dataset_path=output_path,
+        dataset_name=output_name,
+        dataset_type='time_evolution',
+        num_shards=1,
+        total_time_steps=5,
+        example_time_steps=8,
+        time_step_interval=1,
+        num_seeds=10):
+      create_training_data.main([])
 
-    num_terms = 4
-    max_periods = 2
-    seed = 3
-    self.velocity_field = velocity_fields.ConstantVelocityField.from_seed(
-        num_terms, max_periods, seed)
+    metadata_path = '{}/{}.metadata'.format(output_path, output_name)
+    cls.metadata = readers.load_metadata(metadata_path)
+    super(IntegrationTest, cls).setUpClass()
 
-    num_layers = 2
-    kernel_size = 3
-    num_filters = 16
-    stencil_size = 4
-    input_shift = 0.5
-    input_variance = 4.98
-    self.model = models.StencilVNet(
-        self.velocity_field, self.grid, num_layers, kernel_size, num_filters,
-        stencil_size, input_shift, input_variance)
+  @parameterized.parameters(
+      dict(model_cls=models.FiniteDifferenceModel),
+      dict(model_cls=models.LinearModel),
+      dict(model_cls=models.PseudoLinearModel),
+      dict(model_cls=models.NonlinearModel),
+      dict(model_cls=models.DirectModel),
+  )
+  def test_training(self, model_cls):
+    # a basic integration test
+    equation = readers.get_equation(self.metadata)
+    grid = readers.get_output_grid(self.metadata)
+    model = model_cls(equation, grid)
 
-  def test_network_construction(self):
-    """Tests that model generates networks for spatial derivatives."""
-    tf.reset_default_graph()
-    input_state = {advection_equations.C: np.random.random((1,) + self.grid.get_shape())}
-    request = (advection_equations.C_EDGE_X, advection_equations.C_EDGE_Y, advection_equations.C_XX, advection_equations.C_YY)
-    derivs = self.model.state_derivatives(input_state, 0., self.grid, request)
-    with tf.train.MonitoredSession() as sess:
-      derivs_values = sess.run(derivs)
+    def create_inputs(state):
+      inputs = nest.map_structure(lambda x: x[:-1], state)
+      labels = state['concentration'][1:]
+      return inputs, labels
 
-    expected_shape = (1,) + self.grid.get_shape()
-    for key in request:
-      self.assertEqual(np.shape(derivs_values[key]), expected_shape)
+    training_data = (
+        model.load_data(self.metadata)
+        .repeat()
+        .shuffle(100)
+        .map(create_inputs)
+    )
+    model.compile(optimizer=tf.train.AdamOptimizer(1e-4),
+                  loss='mean_squared_error')
+    model.fit(training_data, epochs=1, steps_per_epoch=100)
+    model.evaluate(training_data, steps=10)
 
+  @parameterized.parameters(
+      dict(model_cls=models.LinearModel),
+      dict(model_cls=models.PseudoLinearModel),
+      dict(model_cls=models.NonlinearModel),
+  )
+  def test_training_multiple_times(self, model_cls):
+    # a basic integration test
+    equation = readers.get_equation(self.metadata)
+    grid = readers.get_output_grid(self.metadata)
+    model = model_cls(equation, grid, num_time_steps=4)
+
+    def create_inputs(state):
+      # (batch, x, y)
+      inputs = nest.map_structure(lambda x: x[:-model.num_time_steps], state)
+      # (batch, time, x, y)
+      labels = tensor_ops.stack_all_contiguous_slices(
+          state['concentration'][1:], model.num_time_steps, new_axis=1)
+      return inputs, labels
+
+    training_data = (
+        model.load_data(self.metadata)
+        .map(create_inputs)
+        .apply(tf.data.experimental.unbatch())
+        .shuffle(100)
+        .repeat()
+        .batch(8, drop_remainder=True)
+        .prefetch(1)
+    )
+    model.compile(optimizer=tf.train.AdamOptimizer(1e-4),
+                  loss='mean_squared_error')
+    model.fit(training_data, epochs=1, steps_per_epoch=100)
+    model.evaluate(training_data, steps=10)
 
 if __name__ == '__main__':
   absltest.main()

@@ -20,33 +20,59 @@ from __future__ import print_function
 
 import numpy as np
 
-from typing import Tuple
-
 from pde_superresolution_2d import metadata_pb2
+import typing
+from typing import Tuple, Type, TypeVar
+
+T = TypeVar('T')
 
 
-class Grid(object):
-  """Grid class provides interface to discretization.
+class Grid(typing.NamedTuple(
+    'Grid', [('size_x', int), ('size_y', int), ('step', float)])):
+  """Description of a grid.
 
   Grid class keeps track of size of the computational domain, spatial step,
   provides helper functions for initialization and evaluation of objects that
   depend on discretization (e.g. velocity fields).
 
   Attributes:
-    size_x: Number of finite volumes along x direction
-    size_y: Number of finite volumes along y direction
-    x: Length of the computational domain in arbitrary units
-    y: Width of the computational domain in arbitrary units
-    step: Spatial size of the finite volume cell
+    size_x: Number of finite volumes along x direction.
+    size_y: Number of finite volumes along y direction.
+    step: Spatial size of the finite volume cell.
   """
 
-  def __init__(self, size_x: int, size_y: int, step: float):
-    """Initializes the grid."""
-    self.size_x = size_x
-    self.size_y = size_y
-    self.length_x = step * size_x
-    self.length_y = step * size_y
-    self.step = step
+  @classmethod
+  def from_period(cls: Type[T], size: int, length: float) -> T:
+    """Create a grid from period rather than step-size."""
+    step = length / size
+    return cls(size, size, step)
+
+  @classmethod
+  def from_proto(cls: Type[T], proto: metadata_pb2.Grid) -> T:
+    """Constructs Grid object from proto.
+
+    Args:
+      proto: Protocol buffer encoding the grid object.
+
+    Returns:
+      Grid object constructed from the grid protocol buffer.
+    """
+    return cls(proto.size_x, proto.size_y, proto.step)
+
+  @property
+  def length_x(self) -> float:
+    """Length of the computational domain in arbitrary units."""
+    return self.step * self.size_x
+
+  @property
+  def length_y(self) -> float:
+    """Width of the computational domain in arbitrary units."""
+    return self.step * self.size_y
+
+  @property
+  def shape(self) -> Tuple[int, int]:
+    """Returns the shape of the grid."""
+    return (self.size_x, self.size_y)
 
   def get_mesh(
       self, shift: Tuple[int, int] = (0, 0)) -> Tuple[np.ndarray, np.ndarray]:
@@ -77,10 +103,6 @@ class Grid(object):
             shift_y, self.length_y + shift_y, self.size_y, endpoint=False),
         indexing='ij')
 
-  def get_shape(self) -> Tuple[int, int]:
-    """Returns the shape of the grid."""
-    return (self.size_x, self.size_y)
-
   def to_proto(self) -> metadata_pb2.Grid:
     """Creates a protocol buffer encoding the grid object.
 
@@ -90,16 +112,3 @@ class Grid(object):
     return metadata_pb2.Grid(size_x=self.size_x,
                              size_y=self.size_y,
                              step=self.step)
-
-
-def grid_from_proto(proto: metadata_pb2.Grid) -> Grid:
-  """Constructs Grid object from proto.
-
-  Args:
-    proto: Protocol buffer encoding the grid object.
-
-  Returns:
-    Grid object constructed from the grid protocol buffer.
-  """
-  return Grid(proto.size_x, proto.size_y, proto.step)
-

@@ -32,48 +32,16 @@ class StatesTest(absltest.TestCase):
     self.assertEqual(state_a.derivative_orders, state_b.derivative_orders)
     self.assertEqual(state_a.offset, state_b.offset)
 
-  def test_add_prefix(self):
-    """Tests add_prefix function."""
-    test_prefix = 'test_'
-    initial_key = states.StateKey('prefix', (1, 2, 3), (4, 5))
-    expected = states.StateKey('test_prefix', (1, 2, 3), (4, 5))
-    result = states.add_prefix(test_prefix, initial_key)
+  def test_with_prefix(self):
+    initial_key = states.StateKey('name', (1, 2, 3), (4, 5))
+    expected = states.StateKey('exact_name', (1, 2, 3), (4, 5))
+    result = initial_key.exact()
     self._assert_states_equal(result, expected)
 
-  def test_add_prefix_tuple(self):
-    """Tests add_prefix_tuple function."""
-    test_prefix = 'second_test_'
-    initial_key_a = states.StateKey('key_a', (1, 2, 3), (4, 5))
-    initial_key_b = states.StateKey('key_b', (3, 1, 2), (0, 0))
-    initial_tuple = (initial_key_a, initial_key_b)
-    prefixed_key_a = states.StateKey('second_test_key_a', (1, 2, 3), (4, 5))
-    prefixed_key_b = states.StateKey('second_test_key_b', (3, 1, 2), (0, 0))
-    expected_tuple = (prefixed_key_a, prefixed_key_b)
-    result_tuple = states.add_prefix_tuple(test_prefix, initial_tuple)
-    for state_key_a, state_key_b in zip(result_tuple, expected_tuple):
-      self._assert_states_equal(state_key_a, state_key_b)
-
-  def test_add_prefix_keys(self):
-    """Tests add_prefix_keys function."""
-    test_prefix = 'third_test_'
-    initial_key_a = states.StateKey('key_a', (1, 2, 3), (4, 5))
-    initial_key_b = states.StateKey('key_b', (3, 1, 2), (0, 0))
-    data_a = np.eye(5)
-    data_b = np.ones((5, 5))
-    initial_dict = {initial_key_a: data_a, initial_key_b: data_b}
-    prefixed_key_a = states.StateKey('third_test_key_a', (1, 2, 3), (4, 5))
-    prefixed_key_b = states.StateKey('third_test_key_b', (3, 1, 2), (0, 0))
-    expected_dict = {prefixed_key_a: data_a, prefixed_key_b: data_b}
-    result_dict = states.add_prefix_keys(test_prefix, initial_dict)
-    for key_a, value_a in result_dict.items():
-      self.assertIn(key_a, expected_dict)
-      np.testing.assert_allclose(value_a, expected_dict[key_a])
-
-  def test_add_time_derivative(self):
-    """Tests add_time_derivative function."""
+  def test_time_derivative(self):
     initial_key = states.StateKey('key_a', (1, 2, 3), (4, 5))
     expected = states.StateKey('key_a', (1, 2, 4), (4, 5))
-    self._assert_states_equal(expected, states.add_time_derivative(initial_key))
+    self._assert_states_equal(expected, initial_key.time_derivative())
 
 
 if __name__ == '__main__':

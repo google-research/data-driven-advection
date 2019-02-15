@@ -47,78 +47,80 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import enum
 from pde_superresolution_2d import metadata_pb2
-from typing import Dict, NamedTuple, Tuple, Any
+import typing
+from typing import Tuple, Type, TypeVar
+
+T = TypeVar('T')
 
 
-BASELINE_PREFIX = 'baseline_'  # prefix for derivatives evaluated on coarse grid
-MODEL_PREFIX = 'model_'  # prefix for states evaluated by the model
-EXACT_PREFFIX = 'exact_'  # prefix for states obtained by coarse-graining
+class Prefix(enum.Enum):
+  BASELINE = 'baseline_'  # prefix for derivatives evaluated on coarse grid
+  MODEL = 'model_'  # prefix for states evaluated by the model
+  EXACT = 'exact_'  # prefix for states obtained by coarse-graining
 
 
-StateKey = NamedTuple('StateKey', [('name', str),  # pylint: disable=invalid-name
-                                   ('derivative_orders', Tuple[int, int, int]),
-                                   ('offset', Tuple[int, int])])
-"""Descriptor of the state component.
-
-StateKey is used as a key in the State==Dict[StateKey, tf.Tensor]. It holds
-information about the component stored in the corresponding tensor. It is also
-used by Equation to request values from the model.
-
-Attributes:
-  name: Name of the component.
-  derivative_orders: Derivative orders with respect to x, y, t respectively.
-  offset: Number of half-integer shifts on the grid.
-"""
+class Direction(enum.Enum):
+  X = 0
+  Y = 1
+  T = 2
 
 
-def add_prefix(prefix: str, state_key: StateKey) -> StateKey:
-  """Returns a StateKey with a prefix added the name field."""
-  return state_key._replace(name=prefix + state_key.name)
+class StateKey(typing.NamedTuple(
+    'StateKey', [
+        ('name', str),
+        ('derivative_orders', Tuple[int, int, int]),
+        ('offset', Tuple[int, int])
+    ])):
+  """Description of the state component.
 
+  StateKey is used as a key in the State==Dict[StateKey, tf.Tensor]. It holds
+  information about the component stored in the corresponding tensor. It is also
+  used by Equation to request values from the model.
 
-def add_prefix_tuple(prefix: str,
-                     state_keys: Tuple[StateKey, ...]) -> Tuple[StateKey, ...]:
-  """Returns a Tuple of StateKeys with a prefix added their name fields."""
-  return tuple([add_prefix(prefix, state_key) for state_key in state_keys])
+  Attributes:
+    name: Name of the component.
+    derivative_orders: Derivative orders with respect to x, y, t respectively.
+    offset: Number of half-integer shifts on the grid.
+  """
 
+  @classmethod
+  def from_proto(cls: Type[T], proto: metadata_pb2.State) -> T:
+    """Construct a state from a proto."""
+    name = proto.name
+    derivative_orders = (proto.deriv_x, proto.deriv_y, proto.deriv_t)
+    offset = (proto.offset_x, proto.offset_y)
+    return cls(name, derivative_orders, offset)
 
-def add_prefix_keys(prefix: str,
-                    state: Dict[StateKey, Any]) -> Dict[StateKey, Any]:
-  """Returns a state with name field of StateKeys prefixed with prefix."""
-  return {add_prefix(prefix, key): value for key, value in state.items()}
+  def to_proto(self) -> metadata_pb2.State:
+    """Creates a protocol buffer representing the state component."""
+    deriv_x, deriv_y, deriv_t = self.derivative_orders
+    offset_x, offset_y = self.offset
+    state_proto = metadata_pb2.State(
+        name=self.name, deriv_x=deriv_x,
+        deriv_y=deriv_y, deriv_t=deriv_t,
+        offset_x=offset_x, offset_y=offset_y)
+    return state_proto
 
+  def time_derivative(self: T) -> T:
+    """Returns a StateKey with derivative_order_t incremented by 1."""
+    derivatives = list(self.derivative_orders)
+    derivatives[-1] += 1
+    return self._replace(derivative_orders=tuple(derivatives))
 
-def state_key_to_proto(state_key: StateKey):
-  """Creates a protocol buffer representing the state component."""
-  deriv_x, deriv_y, deriv_t = state_key.derivative_orders
-  offset_x, offset_y = state_key.offset
-  state_proto = metadata_pb2.State(
-      name=state_key.name, deriv_x=deriv_x,
-      deriv_y=deriv_y, deriv_t=deriv_t,
-      offset_x=offset_x, offset_y=offset_y)
-  return state_proto
+  def with_prefix(self: T, prefix: Prefix) -> T:
+    """Returns a StateKey with a prefix added to the name field."""
+    return self._replace(name=prefix.value + self.name)
 
+  def model(self: T) -> T:
+    """Returns a StateKey for "model" states."""
+    return self.with_prefix(Prefix.MODEL)
 
-def state_key_from_proto(state_proto: metadata_pb2.State) -> StateKey:
-  """Creates a protocol buffer representing the state component."""
-  deriv_x = state_proto.deriv_x
-  deriv_y = state_proto.deriv_y
-  deriv_t = state_proto.deriv_t
-  offset_x = state_proto.offset_x
-  offset_y = state_proto.offset_y
-  name = state_proto.name
-  return StateKey(str(name), (deriv_x, deriv_y, deriv_t), (offset_x, offset_y))
+  def baseline(self: T) -> T:
+    """Returns a StateKey for "baseline" states."""
+    return self.with_prefix(Prefix.BASELINE)
 
-
-def add_time_derivative(state_key: StateKey) -> StateKey:
-  """Returns a StateKey with derivative_order_t incremented by 1."""
-  derivatives = list(state_key.derivative_orders)
-  derivatives[-1] += 1
-  return state_key._replace(derivative_orders=tuple(derivatives))
-
-
-def add_time_derivative_tuple(
-    state_keys: Tuple[StateKey, ...]) -> Tuple[StateKey, ...]:
-  """Returns a Tuple of StateKey with derivative_order_t incremented by 1."""
-  return tuple([add_time_derivative(state_key) for state_key in state_keys])
+  def exact(self: T) -> T:
+    """Returns a StateKey for "exact" states."""
+    return self.with_prefix(Prefix.EXACT)

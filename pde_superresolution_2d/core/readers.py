@@ -22,23 +22,27 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-import tensorflow as tf
-from typing import Dict, Tuple
-
-from google.protobuf import text_format
-from tensorflow import gfile
-from pde_superresolution_2d.core import grids
 from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import equations
+from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import utils
+from tensorflow import gfile
+import tensorflow as tf
+from typing import Dict, Iterable, List, Sequence, Tuple
+from google.protobuf import text_format
+
+# Imports to register equations by name in equations.CONTINUOUS_EQUATIONS.
+# pylint: disable=unused-import,g-bad-import-order
+from pde_superresolution_2d.advection import equations as advection_equations
+from pde_superresolution_2d.floods import equations as floods_equations
+# pylint: enable=unused-import,g-bad-import-order
 
 
 def initialize_dataset(
     metadata: metadata_pb2.Dataset,
-    requested_data_keys: Tuple[Tuple[states.StateKey, ...], ...],
-    requested_data_grids: Tuple[grids.Grid, ...]
+    requested_data_keys: Sequence[Sequence[states.StateKey]],
+    requested_data_grids: Sequence[grids.Grid],
 ) -> tf.data.Dataset:
   """Returns a tf.data.Dataset, setup to provide requested states.
 
@@ -53,8 +57,8 @@ def initialize_dataset(
   """
   train_files = metadata.file_names
   train_files = [str(train_file) for train_file in train_files]
-  data_components = _parse_components(metadata)
-  features = _generate_features(data_components)
+  data_keys = data_component_keys(metadata.components)
+  features = _generate_features(data_keys, metadata.example_time_steps)
   _assert_compatible(requested_data_keys, requested_data_grids, features)
   train_dataset = tf.data.TFRecordDataset(train_files)
 
@@ -64,13 +68,10 @@ def initialize_dataset(
     # TODO(dkochkov) Consider switching logic to use parse_example.
     output_states = []
     for state_keys, grid in zip(requested_data_keys, requested_data_grids):
-      state = {}
-      for state_key in state_keys:
-        string_key = utils.component_name(state_key, grid)
-        value = tf.reshape(parsed_features[string_key], grid.get_shape())
-        state[state_key] = tf.to_double(value)
+      state = {state_key: parsed_features[utils.component_name(state_key, grid)]
+               for state_key in state_keys}
       output_states.append(state)
-    return tuple(output_states)
+    return output_states
 
   train_dataset = train_dataset.map(parse_function)
   return train_dataset
@@ -90,9 +91,9 @@ def load_metadata(metadata_path: str) -> metadata_pb2.Dataset:
   return proto
 
 
-def _parse_components(
-    metadata: metadata_pb2.Dataset
-) -> Tuple[Tuple[states.StateKey, grids.Grid], ...]:
+def data_component_keys(
+    components: Iterable[metadata_pb2.Dataset.DataComponent]
+) -> List[Tuple[states.StateKey, grids.Grid]]:
   """Parses data components from the metadata.
 
   Args:
@@ -101,16 +102,16 @@ def _parse_components(
   Returns:
     Components in the dataset organized as tuple of StateKey, Grid pairs.
   """
-  data_components_proto = metadata.components
   data_components = []
-  for component in data_components_proto:
-    data_components.append((states.state_key_from_proto(component.state_key),  # pytype: disable=wrong-arg-types
-                            grids.grid_from_proto(component.grid)))  # pytype: disable=wrong-arg-types
-  return tuple(data_components)
+  for component in components:
+    data_components.append((states.StateKey.from_proto(component.state_key),  # pytype: disable=wrong-arg-types
+                            grids.Grid.from_proto(component.grid)))  # pytype: disable=wrong-arg-types
+  return data_components
 
 
 def _generate_features(
-    data_components: Tuple[Tuple[states.StateKey, grids.Grid], ...]
+    data_components: List[Tuple[states.StateKey, grids.Grid]],
+    example_time_steps: int,
 ) -> Dict[str, tf.FixedLenFeature]:
   """Generates features dictionary to be used to parse tfrecord files.
 
@@ -123,15 +124,15 @@ def _generate_features(
   """
   features = {}
   for state_key, grid in data_components:
-    feature_size = np.prod(grid.get_shape())
+    shape = (example_time_steps,) + grid.shape
     string_key = utils.component_name(state_key, grid)
-    features[string_key] = tf.FixedLenFeature([feature_size], tf.float32)
+    features[string_key] = tf.FixedLenFeature(shape, tf.float32)
   return features
 
 
 def _assert_compatible(
-    requested_data_keys: Tuple[Tuple[states.StateKey, ...], ...],
-    requested_data_grids: Tuple[grids.Grid, ...],
+    requested_data_keys: Sequence[Sequence[states.StateKey]],
+    requested_data_grids: Sequence[grids.Grid],
     available_features: Dict[str, tf.FixedLenFeature]):
   """Checks that the requested data is available in the dataset.
 
@@ -145,20 +146,21 @@ def _assert_compatible(
   """
   for state_keys, grid in zip(requested_data_keys, requested_data_grids):
     for state_key in state_keys:
-      if utils.component_name(state_key, grid) not in available_features:
-        raise ValueError('requested data is not present in the dataset')
+      name = utils.component_name(state_key, grid)
+      if name not in available_features:
+        raise ValueError('requested data {} is not present in the dataset: {}'
+                         .format(name, list(available_features)))
 
 
-def get_low_res_grid(metadata: metadata_pb2.Dataset) -> grids.Grid:
+def get_output_grid(metadata: metadata_pb2.Dataset) -> grids.Grid:
   """Reconstructs the low resolution grid from metadata."""
-  return grids.grid_from_proto(metadata.low_resolution_grid)  # pytype: disable=wrong-arg-types
+  return grids.Grid.from_proto(metadata.output_grid)  # pytype: disable=wrong-arg-types
 
 
-def get_high_res_grid(metadata: metadata_pb2.Dataset) -> grids.Grid:
+def get_simulation_grid(metadata: metadata_pb2.Dataset) -> grids.Grid:
   """Reconstructs the high resolution grid from metadata."""
-  return grids.grid_from_proto(metadata.high_resolution_grid)  # pytype: disable=wrong-arg-types
+  return grids.Grid.from_proto(metadata.simulation_grid)  # pytype: disable=wrong-arg-types
 
 
-def get_baseline_model(metadata: metadata_pb2.Dataset) -> models.Model:
-  """Reconstructs the model used to generate dataset."""
-  return models.model_from_proto(metadata.model)  # pytype: disable=wrong-arg-types
+def get_equation(metadata: metadata_pb2.Dataset) -> equations.Equation:
+  return equations.equation_from_proto(metadata.equation)  # pytype: disable=wrong-arg-types
