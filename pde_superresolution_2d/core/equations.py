@@ -34,7 +34,7 @@ from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
 import tensorflow as tf
 
-from google3.net.proto2.python.public import message
+from google.protobuf import message
 
 
 Shape = Union[int, Tuple[int]]
