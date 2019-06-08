@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,11 +20,13 @@ from __future__ import division
 from __future__ import print_function
 
 import enum
+from typing import Any, Tuple, TypeVar
+import warnings
+
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import grids
 import tensorflow as tf
-from typing import Any, Tuple, TypeVar
 
 
 class VelocityComponent(enum.Enum):
@@ -43,7 +46,7 @@ class VelocityField(object):
       t: float,
       grid: grids.Grid,
       shift: Tuple[int, int] = (0, 0),
-      cell_average: bool = False,
+      face_average: bool = False,
   ) -> tf.Tensor:
     """Returns a tensor holding x component of the velocity field.
 
@@ -51,8 +54,8 @@ class VelocityField(object):
       t: Time at which to evaluate the velocity fields.
       grid: Grid object on which the field is evaluated.
       shift: Number of half-step shifts on the grid along x and y axes.
-      cell_average: If true, return the cell-average around each point rather
-        than point values directly.
+      face_average: If true, return the average over the face of a grid cell
+        rather than point values directly.
 
     Returns:
       x component of the velocity field as tensor with
@@ -65,7 +68,7 @@ class VelocityField(object):
       t: float,
       grid: grids.Grid,
       shift: Tuple[int, int] = (0, 0),
-      cell_average: bool = False,
+      face_average: bool = False,
   ) -> tf.Tensor:
     """Returns a tensor holding y component of the velocity field.
 
@@ -73,8 +76,8 @@ class VelocityField(object):
       t: Time at which to evaluate the velocity fields.
       grid: Grid object on which the field is evaluated.
       shift: Number of half-step shifts on the grid along x and y axes.
-      cell_average: If true, return the cell-average around each point rather
-        than point values directly.
+      face_average: If true, return the average over the face of a grid cell
+        rather than point values directly.
 
     Returns:
       y component of the velocity field as tensor with
@@ -93,6 +96,21 @@ class VelocityField(object):
       proto: Protocol buffer holding the velocity field data.
     """
     raise NotImplementedError
+
+
+def _block_average_of_sin(k, x, phi, grid_step):
+  """Integral of sin(k * x + phi) over [x - grid_step/2, x + grid_step/2]."""
+  # Based on the indefinite integral:
+  #   \int sin(k x + phi) dx = -cos(k x + phi) / k + C
+  x0 = x - grid_step / 2
+  x1 = x + grid_step / 2
+  with warnings.catch_warnings():
+    warnings.simplefilter('ignore')  # ignore warnings for division by 0
+    return np.where(
+        k == 0,
+        np.sin(phi),
+        1 / (grid_step * k) * (np.cos(k * x0 + phi) - np.cos(k * x1 + phi))
+    )
 
 
 T = TypeVar('T')
@@ -166,16 +184,16 @@ class ConstantVelocityField(VelocityField):
     scale = self.y_wavenumbers if calculate_vx else -self.x_wavenumbers
     return (scale * self.amplitudes * np.sin(phase)).sum(axis=-1)
 
-  def cell_average(
+  def face_average(
       self,
       component: VelocityComponent,
       grid: grids.Grid,
       shift: Tuple[int, int] = (0, 0),
   ) -> np.ndarray:
-    """Calculate the cell-averaged velocity field centerd on the given grid.
+    """Calculate the cell-averaged velocity field over the given cell-face.
 
-    Like evaluate(), but the resulting field is (exactly) averaged over the unit
-    cell centerd on each point.
+    Like evaluate(), but the resulting field is (exactly) averaged over the
+    cell face perpendicular to the velocity component.
 
     Args:
       component: Component of the velocity to be evaluated.
@@ -185,94 +203,34 @@ class ConstantVelocityField(VelocityField):
     Returns:
       Float64 array with shape [X, Y] giving requested velocity field component.
     """
-    # Shift a half-unit cell down and left; we'll roll to evaluate on the
-    # other cell boundaries.
-    # boundary_shift = (shift[0] - 1, shift[1] - 1)
     x, y = grid.get_mesh(shift)
 
     # We use the axis order [x, y, term]
     x = x[..., np.newaxis]
     y = y[..., np.newaxis]
 
-    k_x = 2 * np.pi * self.x_wavenumbers / grid.length_x
-    k_y = 2 * np.pi * self.y_wavenumbers / grid.length_y
+    k_x = 2 * np.pi * self.x_wavenumbers / grid.length_x  # shape: [term]
+    k_y = 2 * np.pi * self.y_wavenumbers / grid.length_y  # shape: [term]
 
-    phase = k_x * x + k_y * y + self.phase_shifts
+    phase = self.phase_shifts
     calculate_vx = component is VelocityComponent.X
     scale = self.y_wavenumbers if calculate_vx else -self.x_wavenumbers
-
-    # This 2D definite integral is straightforward to calculate, but we need to
-    # consider four different cases, depending upon if either the x or y
-    # wavenumbers are zero.
-
-    # Everything follows out from repeated application of a few basic integrals:
-    #   integral(sin(k x + c), dx) = -cos(k x + c) / k
-    #   integral(cos(k x + c), dx) = sin(k x + c) / k
-    # But see these Wolfram Alpha results if you don't want to bother with the
-    # book-keeping yourself:
-    # https://www.wolframalpha.com/input/?i=integral+of+sin(k+x+%2B+c)+over+x+from+x0+to+x1+and+y+from+y0+to+y1
-    # https://www.wolframalpha.com/input/?i=integral+of+sin(k+x+%2B+h+y+%2B+c)+over+x+from+x0+to+x1+and+y+from+y0+to+y1
-
-    # Note that if either wave-number is 0, the term in the field is a constant
-    # in that direction, so the shift we used on the grid doesn't matter.
-
-    result = np.zeros(grid.shape)
-
-    neither_zero = (self.x_wavenumbers != 0) & (self.y_wavenumbers != 0)
-    if neither_zero.any():
-      # double integral over x and y
-      indefinite_integral = (scale[neither_zero]
-                             / (k_x[neither_zero] * k_y[neither_zero])
-                             * self.amplitudes[neither_zero]
-                             * -np.sin(phase[..., neither_zero])).sum(axis=-1)
-      result += grid.step ** -2 * (
-          + np.roll(indefinite_integral, (-1, -1), axis=(0, 1))
-          - np.roll(indefinite_integral, -1, axis=0)
-          - np.roll(indefinite_integral, -1, axis=1)
-          + indefinite_integral
-      )
-
-    wxonly_zero = (self.x_wavenumbers == 0) & (self.y_wavenumbers != 0)
-    if wxonly_zero.any():
-      # integrate over y
-      indefinite_integral = (scale[wxonly_zero] / k_y[wxonly_zero] *
-                             self.amplitudes[wxonly_zero] *
-                             -np.cos(phase[..., wxonly_zero])).sum(axis=-1)
-      result += grid.step ** -1 * (
-          + np.roll(indefinite_integral, -1, axis=1)
-          - indefinite_integral
-      )
-
-    wyonly_zero = (self.x_wavenumbers != 0) & (self.y_wavenumbers == 0)
-    if wyonly_zero.any():
-      # integrate over x
-      indefinite_integral = (scale[wyonly_zero] / k_x[wyonly_zero] *
-                             self.amplitudes[wyonly_zero] *
-                             -np.cos(phase[..., wyonly_zero])).sum(axis=-1)
-      result += grid.step ** -1 * (
-          + np.roll(indefinite_integral, -1, axis=0)
-          - indefinite_integral
-      )
-
-    both_zero = (self.x_wavenumbers == 0) & (self.y_wavenumbers == 0)
-    if both_zero.any():
-      # no integrals
-      result += (scale[both_zero] *
-                 self.amplitudes[both_zero] *
-                 np.sin(phase[..., both_zero])).sum(axis=-1)
-
-    return result
+    if calculate_vx:
+      waves = _block_average_of_sin(k_y, y, k_x * x + phase, grid.step)
+    else:
+      waves = _block_average_of_sin(k_x, x, k_y * y + phase, grid.step)
+    return (scale * self.amplitudes * waves).sum(axis=-1)
 
   def get_velocity_x(
       self,
       t: float,
       grid: grids.Grid,
       shift: Tuple[int, int] = (0, 0),
-      cell_average: bool = False,
+      face_average: bool = False,
   ) -> tf.Tensor:
     """See base class."""
     del t  # constant velocity field is time independent
-    method = self.cell_average if cell_average else self.evaluate
+    method = self.face_average if face_average else self.evaluate
     velocity_x = method(VelocityComponent.X, grid, shift)
     return velocity_x
 
@@ -281,11 +239,11 @@ class ConstantVelocityField(VelocityField):
       t: float,
       grid: grids.Grid,
       shift: Tuple[int, int] = (0, 0),
-      cell_average: bool = False,
+      face_average: bool = False,
   ) -> tf.Tensor:
     """See base class."""
     del t  # constant velocity field is time independent
-    method = self.cell_average if cell_average else self.evaluate
+    method = self.face_average if face_average else self.evaluate
     velocity_y = method(VelocityComponent.Y, grid, shift)
     return velocity_y
 
@@ -393,5 +351,3 @@ def velocity_field_from_proto(
     pb = getattr(proto, proto.WhichOneof('v_field'))
     return ConstantVelocityField.from_proto(pb)
   raise ValueError('Velocity field protocol buffer is not recognized')
-
-

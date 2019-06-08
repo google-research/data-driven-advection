@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,25 +24,24 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import collections
+from typing import (
+    Any, Dict, List, Optional, Mapping, Set, TypeVar, Tuple, Union,
+)
+
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import equations
+from pde_superresolution_2d.core import geometry
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import polynomials
 from pde_superresolution_2d.core import readers
 from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
 import tensorflow as tf
-from typing import Any, Dict, Iterable, List, Optional, TypeVar, Union
 
 
 nest = tf.contrib.framework.nest
-
-KeyedTensors = Dict[states.StateKey, tf.Tensor]
-
-# We really are using native Python strings everywhere (no serialization to
-# bytes/unicode is involved)
-# pylint: disable=g-ambiguous-str-annotation
 
 
 T = TypeVar('T')
@@ -52,7 +52,7 @@ def sorted_values(x: Dict[Any, T]) -> List[T]:
   return [x[k] for k in sorted(x)]
 
 
-def stack_dict(state: KeyedTensors) -> tf.Tensor:
+def stack_dict(state: Dict[Any, tf.Tensor]) -> tf.Tensor:
   """Stack a dict of tensors along its last axis."""
   return tf.stack(sorted_values(state), axis=-1)
 
@@ -70,21 +70,15 @@ class TimeStepModel(tf.keras.Model):
     """Initialize a time-step model."""
     super(TimeStepModel, self).__init__(name=name)
 
-    state_names = [state.name for state in equation.STATE_KEYS]
-    if sorted(set(state_names)) != sorted(state_names):
-      raise ValueError('state names are not unique: {}'.format(state_names))
-
     if num_time_steps < 1:
       raise ValueError('must use at least one time step')
 
-    self.name_to_statekey = dict(zip(state_names, equation.STATE_KEYS))
     self.equation = equation
     self.grid = grid
     self.num_time_steps = num_time_steps
 
     # used by keras
-    self.output_names = sorted(state.name for state in equation.STATE_KEYS
-                               if state not in equation.CONSTANT_KEYS)
+    self.output_names = sorted(equation.evolving_keys)
 
   def load_data(
       self,
@@ -94,12 +88,13 @@ class TimeStepModel(tf.keras.Model):
     """Load data into a tf.data.Dataset for inferrence or training."""
 
     def replace_state_keys_with_names(state):
-      return {k.name: state[k.with_prefix(prefix)]
-              for k in equation.STATE_KEYS}
+      return {k: state[equation.key_definitions[k].with_prefix(prefix)]
+              for k in equation.base_keys}
 
     equation = readers.get_equation(metadata)
     grid = readers.get_output_grid(metadata)
-    keys = [k.with_prefix(prefix) for k in equation.STATE_KEYS]
+    keys = [equation.key_definitions[k].with_prefix(prefix)
+            for k in equation.base_keys]
     dataset = readers.initialize_dataset(metadata, [keys], [grid])
     dataset = dataset.map(replace_state_keys_with_names)
     return dataset
@@ -114,11 +109,10 @@ class TimeStepModel(tf.keras.Model):
       labels: dict of tensors with dimensions [batch, time, x, y], giving the
         predicted state at steps [1, ..., self.num_time_steps].
     """
-    state = {self.name_to_statekey[k]: v for k, v in inputs.items()}
-    evolving_state = {
-        k: v for k, v in state.items() if k not in self.equation.CONSTANT_KEYS}
-    constant_state = {
-        k: v for k, v in state.items() if k in self.equation.CONSTANT_KEYS}
+    constant_state = {k: v for k, v in inputs.items()
+                      if k in self.equation.constant_keys}
+    evolving_inputs = {k: v for k, v in inputs.items()
+                       if k in self.equation.evolving_keys}
 
     def advance(evolving_state, _):
       state = dict(evolving_state)
@@ -126,18 +120,16 @@ class TimeStepModel(tf.keras.Model):
       return self.take_time_step(state)
 
     advanced = tf.scan(
-        advance, tf.range(self.num_time_steps), initializer=evolving_state)
+        advance, tf.range(self.num_time_steps), initializer=evolving_inputs)
     advanced = tensor_ops.moveaxis(advanced, source=0, destination=1)
     return advanced
 
   def time_derivative(
-      self, state: KeyedTensors, time: float = 0.0,
-  ) -> KeyedTensors:
+      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """Compute the time derivative.
 
     Args:
       state: current state of the solution.
-      time: time at which the step is taken.
 
     Returns:
       Updated values for each non-constant term in the state.
@@ -145,13 +137,11 @@ class TimeStepModel(tf.keras.Model):
     raise NotImplementedError
 
   def take_time_step(
-      self, state: KeyedTensors, time: float = 0.0,
-  ) -> KeyedTensors:
+      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """Take a single time-step.
 
     Args:
       state: current state of the solution.
-      time: time at which the step is taken.
 
     Returns:
       Updated values for each non-constant term in the state.
@@ -172,26 +162,24 @@ class SpatialDerivativeModel(TimeStepModel):
     super(SpatialDerivativeModel, self).__init__(
         equation, grid, num_time_steps, name)
 
-  def spatial_derivatives(self, state: KeyedTensors) -> KeyedTensors:
+  def spatial_derivatives(
+      self, state: Mapping[str, tf.Tensor],
+  ) -> Dict[str, tf.Tensor]:
     """Predict all needed spatial derivatives."""
     raise NotImplementedError
 
   def time_derivative(
-      self, state: KeyedTensors, time: float = 0.0,
-  ) -> KeyedTensors:
+      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """See base class."""
-    spatial_derivs = self.spatial_derivatives(state)
-    outputs = self.equation.time_derivative(
-        state, spatial_derivs, self.grid, time)
+    inputs = self.spatial_derivatives(state)
+    outputs = self.equation.time_derivative(self.grid, **inputs)
     return outputs
 
   def take_time_step(
-      self, state: KeyedTensors, time: float = 0.0,
-  ) -> KeyedTensors:
+      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """See base class."""
-    spatial_derivs = self.spatial_derivatives(state)
-    outputs = self.equation.take_time_step(
-        state, spatial_derivs, self.grid, time)
+    inputs = self.spatial_derivatives(state)
+    outputs = self.equation.take_time_step(self.grid, **inputs)
     return outputs
 
 
@@ -209,18 +197,21 @@ class FiniteDifferenceModel(SpatialDerivativeModel):
         equation, grid, num_time_steps, name)
 
     self.accuracy_order = accuracy_order
-    self.parents = {}  # type: Dict[states.StateKey, states.StateKey]
-    self.coefficients = {}  # type: Dict[states.StateKey, Optional[np.ndarray]]
-    self.stencils = {}  # type: Dict[states.StateKey, List[np.ndarray]]
+    self.parents = {}  # type: Dict[str, str]
+    self.coefficients = {}  # type: Dict[str, Optional[np.ndarray]]
+    self.stencils = {}  # type: Dict[str, List[np.ndarray]]
 
-    for key in equation.INPUT_KEYS:
-      parent = find_matching_name(key, equation.STATE_KEYS)
+    for key in self.equation.all_keys:
+      parent = equation.find_base_key(key)
+
+      key_def = equation.key_definitions[key]
+      parent_def = equation.key_definitions[parent]
 
       stencils = []
-      for parent_offset, key_offset, derivative_order in zip(
-          parent.offset, key.offset, key.derivative_orders):
+      for parent_offset, argument_offset, derivative_order in zip(
+          parent_def.offset, key_def.offset, key_def.derivative_orders):
         stencil = polynomials.regular_stencil_1d(
-            abs(parent_offset - key_offset),
+            abs(parent_offset - argument_offset),
             derivative_order,
             accuracy_order,
             grid.step)
@@ -232,7 +223,7 @@ class FiniteDifferenceModel(SpatialDerivativeModel):
         coefficients = None
       else:
         coefficients_2d = polynomials.coefficients(
-            stencils, equation.METHOD, key.derivative_orders,
+            stencils, equation.METHOD, key_def.derivative_orders,
             accuracy_order, grid.step)
         coefficients = tf.convert_to_tensor(coefficients_2d.ravel(), tf.float32)
 
@@ -240,10 +231,15 @@ class FiniteDifferenceModel(SpatialDerivativeModel):
       self.stencils[key] = stencils
       self.coefficients[key] = coefficients
 
-  def spatial_derivatives(self, inputs: KeyedTensors) -> KeyedTensors:
+  def spatial_derivatives(
+      self, inputs: Mapping[str, tf.Tensor], request: Set[str] = None,
+  ) -> Dict[str, tf.Tensor]:
     """See base class."""
+    if request is None:
+      request = self.equation.all_keys
+
     result = {}
-    for key in self.equation.INPUT_KEYS:
+    for key in request:
       coefficients = self.coefficients[key]
 
       source = inputs[self.parents[key]]
@@ -251,7 +247,11 @@ class FiniteDifferenceModel(SpatialDerivativeModel):
         result[key] = source
       else:
         sizes = [stencil.size for stencil in self.stencils[key]]
-        shifts = [k - p for p, k in zip(self.parents[key].offset, key.offset)]
+
+        key_def = self.equation.key_definitions[key]
+        parent_def = self.equation.key_definitions[self.parents[key]]
+        shifts = [k - p for p, k in zip(parent_def.offset, key_def.offset)]
+
         patches = tensor_ops.extract_patches_2d(source, sizes, shifts)
         result[key] = tf.tensordot(coefficients, patches, axes=[-1, -1])
         assert result[key].shape[-2:] == source.shape[-2:], (
@@ -272,9 +272,9 @@ def _round_down_to_even(x):
   return x - 1 if x % 2 else x
 
 
-def _build_stencils(
-    key: states.StateKey,
-    parent: states.StateKey,
+def build_stencils(
+    key: states.StateDefinition,
+    parent: states.StateDefinition,
     max_stencil_size: int,
     grid_step: float
 ) -> List[np.ndarray]:
@@ -317,10 +317,12 @@ class FixedCoefficientsLayer(tf.keras.layers.Layer):
       constraint_layer: ConstraintLayer,
       stencils: List[np.ndarray],
       shifts: List[int],
+      input_key: Optional[str] = None,
   ):
     self.constraint_layer = constraint_layer
     self.stencils = stencils
     self.shifts = shifts
+    self.input_key = input_key
     super(FixedCoefficientsLayer, self).__init__()
 
   def build(self, input_shape):
@@ -345,10 +347,12 @@ class VaryingCoefficientsLayer(tf.keras.layers.Layer):
       constraint_layer: ConstraintLayer,
       stencils: List[np.ndarray],
       shifts: List[int],
+      input_key: Optional[str] = None,
   ):
     self.constraint_layer = constraint_layer
     self.stencils = stencils
     self.shifts = shifts
+    self.input_key = input_key
     self.kernel_size = constraint_layer.input_size
     super(VaryingCoefficientsLayer, self).__init__(trainable=False)
 
@@ -363,55 +367,96 @@ class VaryingCoefficientsLayer(tf.keras.layers.Layer):
     return tf.einsum('bxys,bxys->bxy', coefficients, patches)
 
 
-def find_matching_name(
-    key: states.StateKey,
-    candidates: Iterable[states.StateKey]
-) -> states.StateKey:
-  """Find the sole candidate with a matching name, by linear search."""
-  matching_keys = []
-  for other in candidates:
-    if other.name == key.name:
-      matching_keys.append(other)
-  if len(matching_keys) != 1:
-    raise ValueError('did not find exactly one match for {}: {}'
-                     .format(key, matching_keys))
-  (match,) = matching_keys  # pylint: disable=unbalanced-tuple-unpacking
-  return match
+def normalize_learned_and_fixed_keys(
+    learned_keys: Optional[Set[str]],
+    fixed_keys: Optional[Set[str]],
+    equation: equations.Equation,
+) -> Tuple[Set[str], Set[str]]:
+  """Normalize learned and fixed equation inputs."""
+  if learned_keys is None and fixed_keys is None:
+    fixed_keys = equation.base_keys
+    learned_keys = equation.derived_keys
+
+  elif fixed_keys is None:
+    learned_keys = set(learned_keys)
+    fixed_keys = equation.all_keys - learned_keys
+
+  elif learned_keys is None:
+    fixed_keys = set(fixed_keys)
+    learned_keys = equation.all_keys - fixed_keys
+
+  else:
+    learned_keys = set(learned_keys)
+    fixed_keys = set(fixed_keys)
+
+    if learned_keys.intersection(fixed_keys):
+      raise ValueError('learned and fixed inputs must be disjoint sets: '
+                       '{} vs {}'.format(learned_keys, fixed_keys))
+
+    missing_inputs = equation.all_keys - learned_keys - fixed_keys
+    if missing_inputs:
+      raise ValueError(
+          'inputs {} not inclued in learned or fixed inputs: {} vs {}'
+          .format(missing_inputs, learned_keys, fixed_keys))
+
+  return learned_keys, fixed_keys
+
+
+def build_output_layers(
+    equation, grid, learned_keys,
+    stencil_size=5,
+    initial_accuracy_order=1,
+    constrained_accuracy_order=1,
+    layer_cls=FixedCoefficientsLayer,
+) -> Dict[str, ConstraintLayer]:
+  """Build a map of output layers for spatial derivative models."""
+  layers = {}
+  for key in learned_keys:
+    parent = equation.find_base_key(key)
+    key_def = equation.key_definitions[key]
+    parent_def = equation.key_definitions[parent]
+
+    stencils = build_stencils(key_def, parent_def, stencil_size, grid.step)
+    shifts = [k - p for p, k in zip(parent_def.offset, key_def.offset)]
+    constraint_layer = polynomials.constraint_layer(
+        stencils, equation.METHOD, key_def.derivative_orders[:2],
+        constrained_accuracy_order, initial_accuracy_order, grid.step,
+    )
+    layers[key] = layer_cls(
+        constraint_layer, stencils, shifts, input_key=parent)
+  return layers
 
 
 class LinearModel(SpatialDerivativeModel):
   """Learn constant linear filters for spatial derivatives."""
 
   def __init__(self, equation, grid, stencil_size=5, initial_accuracy_order=1,
-               constrained_accuracy_order=1, num_time_steps=1,
-               name='linear_model'):
+               constrained_accuracy_order=1, learned_keys=None,
+               fixed_keys=None, num_time_steps=1, name='linear_model'):
     super(LinearModel, self).__init__(
         equation, grid, num_time_steps, name)
+    self.learned_keys, self.fixed_keys = (
+        normalize_learned_and_fixed_keys(learned_keys, fixed_keys, equation))
+    self.output_layers = build_output_layers(
+        equation, grid, self.learned_keys, stencil_size, initial_accuracy_order,
+        constrained_accuracy_order, layer_cls=FixedCoefficientsLayer)
+    self.fd_model = FiniteDifferenceModel(
+        equation, grid, initial_accuracy_order)
 
-    self.stencil_size = stencil_size
-    self.layers_map = {}
-    self.parents = {}
-
-    for key in equation.INPUT_KEYS:
-      parent = find_matching_name(key, equation.STATE_KEYS)
-      stencils = _build_stencils(key, parent, stencil_size, grid.step)
-      shifts = [k - p for p, k in zip(parent.offset, key.offset)]
-      constraint_layer = polynomials.constraint_layer(
-          stencils, equation.METHOD, key.derivative_orders[:2],
-          constrained_accuracy_order, initial_accuracy_order, grid.step,
-      )
-      layer = FixedCoefficientsLayer(constraint_layer, stencils, shifts)
-
-      self.parents[key] = parent
-      self.layers_map[key] = layer
-
-  def spatial_derivatives(self, inputs: KeyedTensors) -> KeyedTensors:
+  def spatial_derivatives(self, inputs):
     """See base class."""
     result = {}
-    for key in self.equation.INPUT_KEYS:
-      layer = self.layers_map[key]
-      input_tensor = inputs[self.parents[key]]
+
+    for key in self.learned_keys:
+      layer = self.output_layers[key]
+      input_tensor = inputs[layer.input_key]
       result[key] = layer(input_tensor)
+
+    if self.fixed_keys:
+      result.update(
+          self.fd_model.spatial_derivatives(inputs, self.fixed_keys)
+      )
+
     return result
 
 
@@ -462,47 +507,74 @@ class PseudoLinearModel(SpatialDerivativeModel):
   """Learn pseudo-linear filters for spatial derivatives."""
 
   def __init__(self, equation, grid, stencil_size=5, initial_accuracy_order=1,
-               constrained_accuracy_order=1, core_model_func=conv2d_stack,
-               num_time_steps=1, name='pseudo_linear_model', **kwargs):
+               constrained_accuracy_order=1, learned_keys=None,
+               fixed_keys=None, core_model_func=conv2d_stack,
+               num_time_steps=1, geometric_transforms=None,
+               predict_permutations=True, name='pseudo_linear_model',
+               **kwargs):
     super(PseudoLinearModel, self).__init__(
         equation, grid, num_time_steps, name)
 
-    self.stencil_size = stencil_size
-    self.layers_map = {}
-    self.parents = {}
+    self.learned_keys, self.fixed_keys = (
+        normalize_learned_and_fixed_keys(learned_keys, fixed_keys, equation))
+    self.output_layers = build_output_layers(
+        equation, grid, self.learned_keys, stencil_size, initial_accuracy_order,
+        constrained_accuracy_order, layer_cls=VaryingCoefficientsLayer)
+    self.fd_model = FiniteDifferenceModel(
+        equation, grid, initial_accuracy_order)
 
-    for key in equation.INPUT_KEYS:
-      parent = find_matching_name(key, equation.STATE_KEYS)
-      stencils = _build_stencils(key, parent, stencil_size, grid.step)
-      shifts = [k - p for p, k in zip(parent.offset, key.offset)]
-      constraint_layer = polynomials.constraint_layer(
-          stencils, equation.METHOD, key.derivative_orders[:2],
-          constrained_accuracy_order, initial_accuracy_order, grid.step,
-      )
-      layer = VaryingCoefficientsLayer(constraint_layer, stencils, shifts)
+    if not predict_permutations:
+      # NOTE(shoyer): this only makes sense if geometric_transforms includes
+      # permutations. Otherwise you won't be predicting every needed tensor.
+      modeled = set()
+      for key in sorted(self.output_layers):
+        value = equation.key_definitions[key]
+        swapped = value.swap_xy()
+        if swapped in modeled:
+          del self.output_layers[key]
+        modeled.add(value)
 
-      self.parents[key] = parent
-      self.layers_map[key] = layer
+    if geometric_transforms is None:
+      geometric_transforms = [geometry.Identity()]
+    self.geometric_transforms = geometric_transforms
 
     num_outputs = sum(
-        layer.kernel_size for layer in self.layers_map.values()
+        layer.kernel_size for layer in self.output_layers.values()
     )
     self.core_model = core_model_func(num_outputs, **kwargs)
 
-  def spatial_derivatives(self, inputs: KeyedTensors) -> KeyedTensors:
-    """See base class."""
+  def _apply_model(self, inputs):
     net = self.core_model(inputs)
 
-    keys = self.equation.INPUT_KEYS
-
-    size_splits = [self.layers_map[key].kernel_size for key in keys]
+    size_splits = [
+        self.output_layers[key].kernel_size for key in self.output_layers
+    ]
     heads = tf.split(net, size_splits, axis=-1)
 
     result = {}
-    for key, head in zip(keys, heads):
-      layer = self.layers_map[key]
-      input_tensor = inputs[self.parents[key]]
+    for (key, layer), head in zip(self.output_layers.items(), heads):
+      input_tensor = inputs[layer.input_key]
       result[key] = layer([head, input_tensor])
+    return result
+
+  def spatial_derivatives(self, inputs):
+    """See base class."""
+
+    # averaging over all possible orientations gives us a result that is
+    # guaranteed to be rotation invariant
+    result_list = collections.defaultdict(list)
+    for transform in self.geometric_transforms:
+      output = transform.inverse(self._apply_model(transform.forward(inputs)))
+      for k, v in output.items():
+        result_list[k].append(v)
+    result = {k: tf.add_n(v) / len(v) if len(v) > 1 else v[0]
+              for k, v in result_list.items()}
+
+    if self.fixed_keys:
+      result.update(
+          self.fd_model.spatial_derivatives(inputs, self.fixed_keys)
+      )
+
     return result
 
 
@@ -510,35 +582,43 @@ class NonlinearModel(SpatialDerivativeModel):
   """Learn spatial derivatives directly."""
 
   def __init__(self, equation, grid, core_model_func=conv2d_stack,
-               num_time_steps=1, name='nonlinear_model', **kwargs):
-
+               learned_keys=None, fixed_keys=None, num_time_steps=1,
+               finite_diff_accuracy_order=1, name='nonlinear_model', **kwargs):
     super(NonlinearModel, self).__init__(equation, grid, num_time_steps, name)
-    self.keys = self.equation.INPUT_KEYS
-    self.core_model = core_model_func(num_outputs=len(self.keys), **kwargs)
+    self.learned_keys, self.fixed_keys = (
+        normalize_learned_and_fixed_keys(learned_keys, fixed_keys, equation))
+    self.core_model = core_model_func(
+        num_outputs=len(self.learned_keys), **kwargs)
+    self.fd_model = FiniteDifferenceModel(
+        equation, grid, finite_diff_accuracy_order)
 
-  def spatial_derivatives(self, inputs: KeyedTensors) -> KeyedTensors:
+  def spatial_derivatives(
+      self, inputs: Mapping[str, tf.Tensor],
+  ) -> Dict[str, tf.Tensor]:
     """See base class."""
     net = self.core_model(inputs)
     heads = tf.unstack(net, axis=-1)
-    return dict(zip(self.keys, heads))
+    result = dict(zip(self.learned_keys, heads))
+
+    if self.fixed_keys:
+      result.update(
+          self.fd_model.spatial_derivatives(inputs, self.fixed_keys)
+      )
+    return result
 
 
 class DirectModel(TimeStepModel):
   """Learn time-evolution directly, ignoring the equation."""
 
   def __init__(self, equation, grid, core_model_func=conv2d_stack,
-               num_time_steps=1, name='direct_model', **kwargs):
+               num_time_steps=1, finite_diff_accuracy_order=1,
+               name='direct_model', **kwargs):
     super(DirectModel, self).__init__(equation, grid, num_time_steps, name)
-    self.keys = [k for k in equation.STATE_KEYS
-                 if k not in equation.CONSTANT_KEYS]
+    self.keys = equation.evolving_keys
     self.core_model = core_model_func(num_outputs=len(self.keys), **kwargs)
 
-  def take_time_step(
-      self, state: KeyedTensors, time: float = 0.0,
-  ) -> KeyedTensors:
+  def take_time_step(self, inputs):
     """See base class."""
-    # TODO(shoyer): check that this can be safely done more carefully
-    del time  # unused
-    net = self.core_model(state)
+    net = self.core_model(inputs)
     heads = tf.unstack(net, axis=-1)
     return dict(zip(self.keys, heads))

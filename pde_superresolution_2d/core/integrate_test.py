@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -58,9 +59,9 @@ class IntegrateTest(absltest.TestCase):
   def _test_sample_run(self, equation, model, grid):
     times = np.linspace(0, 50 * equation.get_time_step(grid), 11)
     evolved_states = self._integrate(equation, model, grid, times)
-    self.assertEqual(set(equation.STATE_KEYS), set(evolved_states))
-    solution_shape = evolved_states[equation.STATE_KEYS[0]].shape
-    self.assertEqual(solution_shape, (11,) + self.grid.shape)
+    self.assertEqual(equation.base_keys, set(evolved_states))
+    self.assertEqual(evolved_states['concentration'].shape,
+                     (11,) + self.grid.shape)
 
   def test_sample_run_finite_volume_equation(self):
     self._test_sample_run(self.finite_vol_eq, self.base_vol_model, self.grid)
@@ -80,13 +81,11 @@ class IntegrateTest(absltest.TestCase):
     solution_upwind = self._integrate(
         self.upwind_eq, self.base_upwind_model, self.grid, times)
     np.testing.assert_allclose(
-        solution_diff[advection_equations.C][-1],
-        solution_vol[advection_equations.C][-1],
+        solution_diff['concentration'][-1], solution_vol['concentration'][-1],
         atol=0.001, rtol=0.01,
     )
     np.testing.assert_allclose(
-        solution_upwind[advection_equations.C][-1],
-        solution_vol[advection_equations.C][-1],
+        solution_upwind['concentration'][-1], solution_vol['concentration'][-1],
         atol=0.001, rtol=0.01,
     )
 

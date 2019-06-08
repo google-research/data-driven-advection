@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,36 +18,47 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from google.protobuf import text_format
+from typing import Any, Optional
+
+import numpy as np
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
-from tensorflow import gfile
-from typing import Any
+from tensorflow.io import gfile
+
+from google.protobuf import text_format
 
 
 def component_name(
-    state_key: states.StateKey,
-    grid: grids.Grid = None,
+    state_def: states.StateDefinition,
+    grid: Optional[grids.Grid] = None,
 ) -> str:
-  """Generates string keys from StateKey and Grid combination.
+  """Generates string keys from StateDefinition and Grid combination.
 
-  Generates a string-key by combining parameters of the StateKey and Grid.
+  Generates a string-key by combining parameters of the StateDefinition and
+  Grid.
 
   Args:
-    state_key: StateKey describing the quantity, derivatives and offsets.
+    state_def: StateDefinition describing the quantity, derivatives and offsets.
     grid: Grid object specifying the grid on which the state is evaluated.
 
   Returns:
     String to be used as a key in the tf.Example protocol buffer.
   """
-  if grid is not None:
-    grid_sizes = [grid.size_x, grid.size_y]
+  if state_def.tensor_indices:
+    name = (''.join(index.name.lower() for index in state_def.tensor_indices)
+            + '_' + state_def.name)
   else:
-    grid_sizes = []
+    name = state_def.name
 
-  components = ([state_key.name] + list(state_key.derivative_orders) + list(
-      state_key.offset) + grid_sizes)
-  return '_'.join(map(str, components))
+  underscore_join = lambda x: '_'.join(map(str, x))
+  components = [
+      name,
+      underscore_join(state_def.derivative_orders),
+      underscore_join(state_def.offset),
+  ]
+  if grid is not None:
+    components.append(underscore_join([grid.size_x, grid.size_y]))
+  return '/'.join(map(str, components))
 
 
 def save_proto(proto: Any, output_path: str):
@@ -56,7 +68,7 @@ def save_proto(proto: Any, output_path: str):
     proto: Protocol buffer to be written to `output_path`.
     output_path: Path where to save `proto` protocol buffer.
   """
-  with gfile.Open(output_path, 'w') as f:
+  with gfile.GFile(output_path, 'w') as f:
     f.write(text_format.MessageToString(proto))
 
 
@@ -70,6 +82,16 @@ def load_proto(proto_path: str, pb_class: Any) -> Any:
   Returns:
     Dataset message generated from the file.
   """
-  with gfile.Open(proto_path) as reader:
+  with gfile.GFile(proto_path) as reader:
     proto = text_format.Parse(reader.read(), pb_class)
   return proto
+
+
+def integer_ratio(multiplied, base, epsilon=1e-6) -> int:
+  """Calculate the integer ratio between two numbers, or raise ValueError."""
+  factor = int(round(multiplied / base))
+  if not np.isclose(factor, multiplied / base, rtol=epsilon):
+    raise ValueError(
+        '{} is not an integer multiple of {}'
+        .format(multiplied, base))
+  return factor

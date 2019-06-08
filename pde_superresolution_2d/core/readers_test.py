@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,13 +22,14 @@ import os.path
 
 from absl import flags
 from absl.testing import flagsaver
+import apache_beam as beam
 import numpy as np
 
 from pde_superresolution_2d.advection import equations as advection_equations
 from pde_superresolution_2d.core import readers
 from pde_superresolution_2d.pipelines import create_training_data
-from tensorflow import gfile
 import tensorflow as tf
+from tensorflow.io import gfile
 from absl.testing import absltest
 
 
@@ -53,7 +55,8 @@ class WriteReadDataTest(absltest.TestCase):
     batch_size = 4
     diffusion_coefficient = 0.3
 
-    expected_equation_type = advection_equations.FiniteVolumeAdvectionDiffusion
+    expected_equation = advection_equations.FiniteVolumeAdvectionDiffusion(
+        diffusion_coefficient=diffusion_coefficient)
 
     # create a temporary dataset
     with flagsaver.flagsaver(
@@ -71,10 +74,10 @@ class WriteReadDataTest(absltest.TestCase):
         time_step_interval=5,
         num_seeds=4,
     ):
-      create_training_data.main([])
+      create_training_data.main([], runner=beam.runners.DirectRunner())
 
     metadata_path = os.path.join(output_path, output_name + '.metadata')
-    self.assertTrue(gfile.Exists(metadata_path))
+    self.assertTrue(gfile.exists(metadata_path))
     dataset_metadata = readers.load_metadata(metadata_path)
     low_res_grid = readers.get_output_grid(dataset_metadata)
     high_res_grid = readers.get_simulation_grid(dataset_metadata)
@@ -87,16 +90,17 @@ class WriteReadDataTest(absltest.TestCase):
     self.assertAlmostEqual(high_res_grid.step, 2 * np.pi / high_resolution)
     self.assertAlmostEqual(
         equation.diffusion_coefficient, diffusion_coefficient)
-    self.assertIsInstance(equation, expected_equation_type)
+    self.assertIs(type(equation), type(expected_equation))
     self.assertEqual(dataset_metadata.model.WhichOneof('model'),
                      'finite_difference')
 
-    valid_data_keys = ((advection_equations.C.exact(),),
-                       (advection_equations.C_EDGE_X.exact(),
-                        advection_equations.C_Y_EDGE_Y.exact()))
-    invalid_data_keys = ((advection_equations.C,
-                          advection_equations.C_X),
-                         (advection_equations.C_EDGE_X,))
+    state_keys = expected_equation.key_definitions
+    valid_data_keys = ((state_keys['concentration'].exact(),),
+                       (state_keys['concentration_edge_x'].exact(),
+                        state_keys['concentration_y_edge_y'].exact()))
+    invalid_data_keys = ((state_keys['concentration'],
+                          state_keys['concentration_edge_x']),
+                         (state_keys['concentration_edge_x'],))
     valid_data_grids = (low_res_grid, low_res_grid)
     invalid_data_grids = (low_res_grid, high_res_grid)
 
@@ -147,13 +151,15 @@ class WriteReadDataTest(absltest.TestCase):
         time_step_interval=5,
         num_seeds=4,
     ):
-      create_training_data.main([])
+      create_training_data.main([], runner=beam.runners.DirectRunner())
 
     metadata_path = os.path.join(output_path, output_name + '.metadata')
     dataset_metadata = readers.load_metadata(metadata_path)
     low_res_grid = readers.get_output_grid(dataset_metadata)
 
-    data_key = advection_equations.C.exact()
+    equation = advection_equations.FiniteVolumeAdvectionDiffusion(
+        diffusion_coefficient=0.1)
+    data_key = equation.key_definitions['concentration'].exact()
     dataset = readers.initialize_dataset(
         dataset_metadata, ((data_key,),), (low_res_grid,))
     dataset = dataset.repeat(1)

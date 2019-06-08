@@ -22,6 +22,16 @@ package pde_superresolution_2d;
 message State {
   string name = 1;
 
+  enum TensorIndex {
+    UNDEFINED = 0;
+    X = 1;
+    Y = 2;
+    Z = 3;
+  }
+  // The (physical) tensor components that this state corresponds to, e.g., []
+  // for a scalar value or [X] for the x-component of a vector.
+  repeated TensorIndex tensor_indices = 7;
+
   // Derivative orders data.
   int32 deriv_x = 2;
   int32 deriv_y = 3;
@@ -94,7 +104,8 @@ message AdvectionEquation {
   double cfl_safety_factor = 1;
 }
 message SaintVenantEquation {
-  double time_step_factor = 1;
+  double cfl_safety_factor = 1;
+  double max_water_depth = 2;
 }
 
 // Stores the spatial derivatives model used to generate data.

@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,13 +20,12 @@ from __future__ import division
 from __future__ import print_function
 
 import functools
-import itertools
+from typing import Any, Iterator, Optional, Sequence, Tuple
 
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
 import scipy.special
 import tensorflow as tf
-from typing import Any, Iterator, Optional, Sequence, Tuple
 
 
 def regular_stencil_1d(
@@ -64,19 +64,27 @@ def _kronecker_product(arrays: Sequence[np.ndarray]) -> np.ndarray:
   return functools.reduce(np.kron, arrays)
 
 
-def _generate_exponents(
-    derivative_orders: Sequence[int],
-    accuracy_order: int,
-) -> Iterator[Tuple[int, ...]]:
-  """Generate all powers to include in these constraints."""
-  # TODO(shoyer): consider refactoring this into an approach that generates
-  # exponents directly without filtering.
-  max_exponents = [accuracy_order + order for order in derivative_orders]
-  for exponents in itertools.product(*map(range, max_exponents)):
-    if accuracy_order > sum(
-        max(0, exponent - derivative_order)
-        for exponent, derivative_order in zip(exponents, derivative_orders)):
-      yield exponents
+def _exponents_up_to_degree(degree: int,
+                            num_dimensions: int) -> Iterator[Tuple[int]]:
+  """Generate all exponents up to given degree.
+
+  Args:
+    degree: a non-negative integer representing the maximum degree.
+    num_dimensions: a non-negative integer representing the number of
+      dimensions.
+
+  Yields:
+    An iterator over all tuples of non-negative integers of length
+    num_dimensions, whose sum is at most degree. For example, for degree=2 and
+    num_dimensions=2, this iterates through [(0, 0), (0, 1), (0, 2), (1, 0),
+    (1, 1), (2, 0)].
+  """
+  if num_dimensions == 0:
+    yield tuple()
+  else:
+    for d in range(degree + 1):
+      for exponents in _exponents_up_to_degree(degree - d, num_dimensions - 1):
+        yield (d,) + exponents
 
 
 def constraints(
@@ -128,7 +136,10 @@ def constraints(
 
   all_constraints = {}
 
-  for exponents in _generate_exponents(derivative_orders, accuracy_order):
+  # See http://g3doc/third_party/py/pde_superresolution_2d/g3doc/polynomials.md.
+  num_dimensions = len(stencils)
+  max_degree = accuracy_order + sum(derivative_orders) - 1
+  for exponents in _exponents_up_to_degree(max_degree, num_dimensions):
 
     # build linear constraints for a single polynomial term:
     # \prod_i {x_i}^{m_i}
@@ -143,9 +154,9 @@ def constraints(
           raise ValueError('grid_step is required for finite volumes')
         # average value of x**m over a centered grid cell
         lhs_terms.append(
-            1 / grid_step * ((stencil + grid_step / 2)**
-                             (exponent + 1) - (stencil - grid_step / 2)**
-                             (exponent + 1)) / (exponent + 1))
+            1 / grid_step * ((stencil + grid_step / 2)**(exponent + 1) -
+                             (stencil - grid_step / 2)**(exponent + 1)) /
+            (exponent + 1))
       elif method == metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE:
         lhs_terms.append(stencil**exponent)
       else:

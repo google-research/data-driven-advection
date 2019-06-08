@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -163,7 +164,7 @@ class PolynomialsTest(parameterized.TestCase):
     np.testing.assert_allclose(a, expected_a)
     np.testing.assert_allclose(b, expected_b)
 
-  def test_constraints_2d(self):
+  def test_constraints_2d_second_order_zeroth_derivative(self):
     # these constraints should be under-determined.
     stencils = [np.array([-0.5, 0.5])] * 2
     A, b = polynomials.constraints(  # pylint: disable=invalid-name
@@ -177,6 +178,39 @@ class PolynomialsTest(parameterized.TestCase):
     # explicitly test two valid solutions
     np.testing.assert_allclose(A.dot([1 / 4, 1 / 4, 1 / 4, 1 / 4]), b)
     np.testing.assert_allclose(A.dot([4 / 10, 1 / 10, 1 / 10, 4 / 10]), b)
+
+  def test_constraints_2d_first_order_first_derivative(self):
+    stencils = [np.array([-1, 0, 1])] * 2
+    A, b = polynomials.constraints(  # pylint: disable=invalid-name
+        stencils,
+        FINITE_DIFF,
+        derivative_orders=[1, 0],
+        accuracy_order=1)
+    # three constraints, for each term in [1, x, y]
+    self.assertEqual(A.shape, (3, 9))
+    self.assertEqual(b.shape, (3,))
+    # explicitly test a valid solution
+    solution = np.array([-1, 0, -1, 0, 0, 0, 1, 0, 1]) / 4
+    np.testing.assert_allclose(A.dot(solution), b)
+    # explicitly test an invalid solution.
+    # this solution is invalid because the stencil is a linear combination
+    # of derivatives in both the x and y directions.
+    non_solution = np.array([-1, 0, -1, 1, 0, -1, 1, 0, 1]) / 4
+    self.assertGreater(np.linalg.norm(A.dot(non_solution) - b), 0.1)
+
+  def test_constraints_2d_first_order_second_derivative(self):
+    stencils = [np.array([-1, 0, 1])] * 2
+    A, b = polynomials.constraints(  # pylint: disable=invalid-name
+        stencils,
+        FINITE_DIFF,
+        derivative_orders=[1, 1],
+        accuracy_order=1)
+    # six constraints, for each term in [1, x, y, x^2, xy, y^2]
+    self.assertEqual(A.shape, (6, 9))
+    self.assertEqual(b.shape, (6,))
+    # explicitly test a valid solution
+    solution = np.array([1, 0, -1, 0, 0, 0, -1, 0, 1]) / 4
+    np.testing.assert_allclose(A.dot(solution), b)
 
   @parameterized.parameters(
       dict(stencil=[-2, -1, 0, 1, 2], method=FINITE_DIFF, derivative_order=1),

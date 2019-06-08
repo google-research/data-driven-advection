@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +23,7 @@ import os.path
 from absl import flags
 from absl.testing import flagsaver
 from absl.testing import parameterized
+import apache_beam as beam
 from pde_superresolution_2d.core import builders
 from pde_superresolution_2d.pipelines import create_training_data
 from tensorflow import gfile
@@ -44,6 +46,10 @@ class CreateTrainingDataTest(parameterized.TestCase):
                               for dataset_type in builders.DATASET_TYPES
                               for equation_name in EQUATION_KWARGS))
   def test(self, equation_name, dataset_type):
+    if (equation_name == 'saint_venant' and
+        dataset_type in ['time_derivatives', 'all_derivatives']):
+      return
+
     output_path = FLAGS.test_tmpdir
     output_name = 'temp'
     shards = 1
@@ -60,7 +66,7 @@ class CreateTrainingDataTest(parameterized.TestCase):
         example_time_steps=3,
         time_step_interval=5,
         num_seeds=2):
-      create_training_data.main([])
+      create_training_data.main([], runner=beam.runners.DirectRunner())
 
     # verify that file was written
     data_path = os.path.join(output_path,

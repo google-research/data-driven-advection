@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,17 +19,15 @@ from __future__ import division
 from __future__ import print_function
 
 import ast
-import os.path
+import os
 
 from absl import app
 from absl import flags
 import apache_beam as beam
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import builders
 from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import grids
-from pde_superresolution_2d.core import models
 from pde_superresolution_2d.pipelines import beamlib
 import tensorflow as tf
 
@@ -38,7 +37,7 @@ from pde_superresolution_2d.advection import equations as advection_equations
 from pde_superresolution_2d.floods import equations as floods_equations
 # pylint: enable=unused-import,g-bad-import-order
 
-from apache_beam import runner
+from apache_beam import runner as flume_runner
 
 # our beam pipeline requires eager mode
 tf.enable_eager_execution()
@@ -94,12 +93,17 @@ flags.DEFINE_integer(
     'Integer seed offset for random number generator. This should be larger '
     'than the largest possible number of evaluation seeds, but smaller '
     'than 2^32 (the size of NumPy\'s random number seed).')
+flags.DEFINE_boolean(
+    'debug', False,
+    'Whether to run in debug mode (with the DirectRunner)')
 
 FLAGS = flags.FLAGS
 
 
-def main(_):
-  runner.program_started()
+def main(_, runner=None):
+  if runner is None:
+    # must create before flags are used
+    runner = flume_runner.DirectRunner()
 
   # files
   dataset_path = FLAGS.dataset_path
@@ -175,7 +179,7 @@ def main(_):
             num_shards=num_shards,
             extra_fields=extra_metadata_fields))
 
-  runner.DirectRunner().run(build_pipeline).wait_until_finish()
+  runner.run(build_pipeline)
 
 
 if __name__ == '__main__':

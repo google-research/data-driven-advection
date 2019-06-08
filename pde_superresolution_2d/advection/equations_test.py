@@ -42,7 +42,7 @@ ADVECTION_EQUATIONS = (
     equations.FiniteDifferenceAdvection(),
     equations.FiniteVolumeAdvection(),
     equations.UpwindAdvection(),
-    equations.VanLeerMono5Advection(),
+    equations.VanLeerAdvection(),
 )
 ALL_EQUATIONS = ADVECTION_DIFFUSION_EQUATIONS + ADVECTION_EQUATIONS
 
@@ -79,6 +79,22 @@ class EquationsTest(parameterized.TestCase):
     result = equations.random_fourier_series(grid, size=(2, 3))
     self.assertEqual(result.shape, (2, 3, 100, 100))
 
+  def test_random_fourier_series_convergence(self):
+    grid = grids.Grid.from_period(100, length=10)
+    result_6 = equations.random_fourier_series(
+        grid, seed=0, max_periods=6, power_law=-4)
+    result_7 = equations.random_fourier_series(
+        grid, seed=0, max_periods=7, power_law=-4)
+    self.assertGreater(result_6.max(), 0.9)
+    self.assertLess(result_6.min(), 0.1)
+    np.testing.assert_allclose(result_6, result_7, atol=0.01)
+
+  def test_binarize(self):
+    x = np.linspace(0, 1, num=7)
+    y = equations.binarize(x, slope=100)
+    expected = np.array([0, 0, 0, 0.5, 1, 1, 1])
+    np.testing.assert_allclose(y, expected, atol=1e-6)
+
   @parameterized.parameters(*ALL_EQUATIONS)
   def test_random_state(self, equation):
     grid = grids.Grid(200, 200, 2 * np.pi / 200)
@@ -88,7 +104,7 @@ class EquationsTest(parameterized.TestCase):
         init_state = equation.random_state(grid, size=size, seed=1)
 
         # keys and shapes should match
-        self.assertEqual(set(init_state), set(equation.STATE_KEYS))
+        self.assertEqual(set(init_state), equation.base_keys)
         for array in init_state.values():
           self.assertEqual(array.shape, size + grid.shape)
 
@@ -100,11 +116,9 @@ class EquationsTest(parameterized.TestCase):
   @parameterized.parameters(*ALL_EQUATIONS)
   def test_take_time_step(self, equation):
     grid = grids.Grid(20, 20, 1)
-    state = {k: tf.zeros(grid.shape) for k in equation.STATE_KEYS}
-    inputs = {k: tf.zeros(grid.shape) for k in equation.INPUT_KEYS}
-    result = equation.take_time_step(state, inputs, grid)
-    expected_keys = set(equation.STATE_KEYS) - set(equation.CONSTANT_KEYS)
-    self.assertEqual(set(result), expected_keys)
+    inputs = {k: tf.zeros(grid.shape) for k in equation.key_definitions}
+    result = equation.take_time_step(grid, **inputs)
+    self.assertEqual(set(result), equation.evolving_keys)
 
   @parameterized.parameters(*ADVECTION_DIFFUSION_EQUATIONS)
   def test_advection_diffusion_proto_conversion(self, equation):
@@ -137,7 +151,7 @@ class EquationsTest(parameterized.TestCase):
       (equations.UpwindAdvection(cfl_safety_factor=1), 1e-7),
       (equations.UpwindAdvectionDiffusion(
           diffusion_coefficient=0, cfl_safety_factor=1), 1e-7),
-      (equations.VanLeerMono5Advection(cfl_safety_factor=1), 1e-7),
+      (equations.VanLeerAdvection(cfl_safety_factor=1), 1e-7),
       (equations.VanLeerMono5AdvectionDiffusion(
           diffusion_coefficient=0, cfl_safety_factor=1), 1e-7),
       (equations.FiniteDifferenceAdvection(cfl_safety_factor=0.5), 0.015),
@@ -147,9 +161,15 @@ class EquationsTest(parameterized.TestCase):
       (equations.FiniteVolumeAdvectionDiffusion(
           diffusion_coefficient=0, cfl_safety_factor=0.5), 0.015),
       (equations.UpwindAdvection(cfl_safety_factor=0.5), 0.015),
-      (equations.VanLeerMono5Advection(cfl_safety_factor=0.5), 0.005),
       (equations.VanLeerMono5AdvectionDiffusion(
           diffusion_coefficient=0, cfl_safety_factor=0.5), 0.005),
+      (equations.VanLeerAdvection(cfl_safety_factor=0.5), 0.005),
+      (equations.VanLeerAdvection(cfl_safety_factor=0.5,
+                                  limiter=equations.Limiter.GLOBAL), 0.005),
+      (equations.VanLeerAdvection(cfl_safety_factor=0.5,
+                                  limiter=equations.Limiter.POSITIVE), 0.005),
+      (equations.VanLeerAdvection(cfl_safety_factor=0.5,
+                                  limiter=equations.Limiter.NONE), 0.005),
   )
   def test_integration_in_constant_velocity_field(self, equation, atol):
     grid = grids.Grid.from_period(100, length=100)
@@ -160,15 +180,14 @@ class EquationsTest(parameterized.TestCase):
     self.assertGreaterEqual(initial_concentration.min(), 0.0)
     self.assertLessEqual(initial_concentration.max(), 1.0 + 1e-7)
 
-    vx_key, vy_key = equation.CONSTANT_KEYS
     initial_state = {
-        equations.C: initial_concentration.astype(np.float32),
-        vx_key: np.ones(grid.shape, np.float32),
-        vy_key: np.zeros(grid.shape, np.float32)
+        'concentration': initial_concentration.astype(np.float32),
+        'x_velocity': np.ones(grid.shape, np.float32),
+        'y_velocity': np.zeros(grid.shape, np.float32)
     }
     steps = round(1 / equation.cfl_safety_factor) * np.arange(10)
     integrated = integrate.integrate_steps(model, initial_state, steps)
-    actual = integrated[equations.C].numpy()
+    actual = integrated['concentration'].numpy()
     expected = np.stack(
         [np.roll(initial_concentration, i, axis=0) for i in range(10)])
     np.testing.assert_allclose(actual, expected, atol=atol)

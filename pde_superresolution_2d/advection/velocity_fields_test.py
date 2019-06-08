@@ -17,17 +17,24 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+from pde_superresolution_2d.advection import equations as advection_equations
 from pde_superresolution_2d.advection import velocity_fields
 from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import tensor_ops
+from pde_superresolution_2d.core import states
+import tensorflow as tf
 
 from absl.testing import absltest
+
+
+tf.enable_eager_execution()
 
 
 class ConstantVelocityFieldTest(absltest.TestCase):
   """Test classes in velocity_field.py."""
 
   def setUp(self):
-    self.grid = grids.Grid.from_period(400, 2 * np.pi)
+    self.grid = grids.Grid.from_period(100, 2 * np.pi)
 
   def test_random_seed_effect(self):
     vfield_a = velocity_fields.ConstantVelocityField.from_seed(seed=3)
@@ -85,7 +92,7 @@ class ConstantVelocityFieldTest(absltest.TestCase):
     np.testing.assert_allclose(np.asarray(velocity_proto.phase_shifts),
                                vfield.phase_shifts, rtol=1e-6)
 
-  def test_cell_average(self):
+  def test_face_average(self):
     # construct a velocity field that covers every branch in the integral
     vfield = velocity_fields.ConstantVelocityField(
         x_wavenumbers=np.array([1, 0, 2, 0]),
@@ -93,38 +100,49 @@ class ConstantVelocityFieldTest(absltest.TestCase):
         amplitudes=np.array([1.1, 1.2, 1.3, 1.4]),
         phase_shifts=np.arange(4.0),
     )
-    high_res_grid = grids.Grid.from_period(512, length=5)
+    high_res_grid = grids.Grid.from_period(256, length=5)
     low_res_grid = grids.Grid.from_period(32, length=5)
 
-    with self.subTest('point and cell-average match at high resolution'):
-      # calculate point velocities at cell-centers
+    with self.subTest('point and face-average match at high resolution'):
       kwargs = dict(t=0, grid=high_res_grid)
-      point_kwargs = dict(cell_average=False, shift=(1, 1), **kwargs)
-      average_kwargs = dict(cell_average=True, shift=(0, 0), **kwargs)
 
-      vx_point = vfield.get_velocity_x(**point_kwargs)
-      vy_point = vfield.get_velocity_y(**point_kwargs)
+      vx_point = vfield.get_velocity_x(face_average=False, **kwargs)
+      vy_point = vfield.get_velocity_y(face_average=False, **kwargs)
 
-      vx_average = vfield.get_velocity_x(**average_kwargs)
-      vy_average = vfield.get_velocity_y(**average_kwargs)
+      vx_average = vfield.get_velocity_x(face_average=True, **kwargs)
+      vy_average = vfield.get_velocity_y(face_average=True, **kwargs)
 
       np.testing.assert_allclose(vx_point, vx_average, atol=1e-3)
       np.testing.assert_allclose(vy_point, vy_average, atol=1e-3)
 
     with self.subTest('average high-res and low-res average match'):
-      kwargs = dict(t=0, cell_average=True)
+      kwargs = dict(t=0, face_average=True)
 
-      vx_low = vfield.get_velocity_x(grid=low_res_grid, **kwargs)
-      vy_low = vfield.get_velocity_y(grid=low_res_grid, **kwargs)
+      vx_low = vfield.get_velocity_x(grid=low_res_grid, shift=(1, 0), **kwargs)
+      vy_low = vfield.get_velocity_y(grid=low_res_grid, shift=(0, 1), **kwargs)
 
-      vx_high = vfield.get_velocity_x(grid=high_res_grid, **kwargs)
-      vy_high = vfield.get_velocity_y(grid=high_res_grid, **kwargs)
+      vx_high = vfield.get_velocity_x(
+          grid=high_res_grid, shift=(1, 0), **kwargs)
+      vy_high = vfield.get_velocity_y(
+          grid=high_res_grid, shift=(0, 1), **kwargs)
 
-      vx_high_averaged = vx_high.reshape(32, 16, 32, 16).mean(axis=(1, 3))
-      vy_high_averaged = vy_high.reshape(32, 16, 32, 16).mean(axis=(1, 3))
+      vx_def = states.StateDefinition(
+          'v', (states.Dimension.X,), (0, 0, 0), offset=(1, 0))
+      vy_def = states.StateDefinition(
+          'v', (states.Dimension.Y,), (0, 0, 0), offset=(0, 1))
+      vx_high_average = tensor_ops.regrid(
+          vx_high, vx_def, high_res_grid, low_res_grid)
+      vy_high_average = tensor_ops.regrid(
+          vy_high, vy_def, high_res_grid, low_res_grid)
 
-      np.testing.assert_allclose(vx_low, vx_high_averaged)
-      np.testing.assert_allclose(vy_low, vy_high_averaged)
+      np.testing.assert_allclose(vx_low, vx_high_average)
+      np.testing.assert_allclose(vy_low, vy_high_average)
+
+    with self.subTest('divergence free'):
+      divergence = advection_equations.flux_to_time_derivative(
+          vx_low, vy_low, grid_step=1.0)
+      np.testing.assert_allclose(divergence, np.zeros_like(divergence),
+                                 atol=1e-8)
 
   def test_normalize(self):
 
@@ -139,7 +157,7 @@ class ConstantVelocityFieldTest(absltest.TestCase):
     self.assertNotAlmostEqual(original_max_velocity, 1.0, places=2)
 
     new_max_velocity = maximum_velocity(original_vfield.normalize())
-    self.assertAlmostEqual(new_max_velocity, 1.0, places=4)
+    self.assertAlmostEqual(new_max_velocity, 1.0, places=3)
 
 
 if __name__ == '__main__':

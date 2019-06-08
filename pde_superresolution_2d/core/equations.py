@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,19 +26,17 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
-import operator
+from typing import Any, Dict, Iterator, Set, Tuple, Type, TypeVar, Union
 
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
 import tensorflow as tf
-from typing import Any, Dict, Iterator, Tuple, Type, Union
 
 from google3.net.proto2.python.public import message
 
 
-KeyedTensors = Dict[states.StateKey, tf.Tensor]
 Shape = Union[int, Tuple[int]]
 
 
@@ -53,43 +52,119 @@ class Equation(object):
   performance comparison and experimentation.
 
   Attributes:
-    STATE_KEYS: A tuple of StateKeys that represent the content of a state.
-    CONSTANT_KEYS: A tuple of StateKeys found in STATE_KEYs that don't change
-      over time.
-    INPUT_KEYS: A tuple of StateKeys that specifies requested inputs (i.e.,
-      spatial derivatives) for use in the time_derivative() or take_time_step()
-      methods.
     DISCRETIZATION_NAME: Name of the discretization method.
     METHOD: Discretization method type (finite difference or finite volume).
     MONOTONIC: Are dynamics guaranteed to be monotonic?
+    key_definitions: a dict mapping strings to StateDefinitions, providing a map
+      from keyword arguments required by time_derivative and take_time_step to
+      StateDefintiion instances defining what these keys represent.
+    evolving_keys: the set of variable names found in key_definitions that fully
+      describe the time-dependent state of the equation.
+    constant_keys: the set of variable names found in key_definitions that fully
+      describe the time-independent state of the equation.
   """
 
   DISCRETIZATION_NAME = ...   # type: str
   METHOD = ...  # type: metadata_pb2.Equation.Discretization.Method
   MONOTONIC = ...  # type: bool
 
-  STATE_KEYS = ...  # type: Tuple[states.StateKey, ...]
-  CONSTANT_KEYS = {}  # type: Tuple[states.StateKey, ...]
-  INPUT_KEYS = ...  # type: Tuple[states.StateKey, ...]
+  key_definitions = ...  # type: Dict[str, states.StateDefinition]
+  evolving_keys = ...  # type: Set[str]
+  constant_keys = ...  # type: Set[str]
+
+  def __init__(self):
+    self._validate_keys()
+
+  def _validate_keys(self):
+    """Validate the key_definitions, evolving_keys and constant_keys attributes.
+    """
+    repeated_keys = self.evolving_keys & self.constant_keys
+    if repeated_keys:
+      raise ValueError('overlapping entries between evolving_keys and '
+                       'constant_keys: {}'.format(repeated_keys))
+
+    missing_keys = self.derived_keys - self.all_keys
+    if missing_keys:
+      raise ValueError('not all entries in evolving_keys and constant_keys '
+                       'found in key_definitions: {}'.format(missing_keys))
+
+    for key in self.base_keys:
+      key_def = self.key_definitions[key]
+      if key_def.derivative_orders != (0, 0, 0):
+        raise ValueError('keys present in evolving keys and constant keys '
+                         'cannot have derivatives, but {} is defined as {}'
+                         .format(key, key_def))
+
+    base_name_and_indices = []
+    for key in self.base_keys:
+      key_def = self.key_definitions[key]
+      base_name_and_indices.append((key_def.name, key_def.tensor_indices))
+    base_name_and_indices_set = set(base_name_and_indices)
+
+    if len(base_name_and_indices_set) < len(base_name_and_indices):
+      raise ValueError('(name, tensor_indices) pairs on each key found in '
+                       'evolving_keys and constant keys must be unique, but '
+                       'some are repeated: {}'
+                       .format(base_name_and_indices))
+
+    for key in self.derived_keys:
+      key_def = self.key_definitions[key]
+      name_and_indices = (key_def.name, key_def.tensor_indices)
+      if name_and_indices not in base_name_and_indices_set:
+        raise ValueError('all keys defined in key_definitions must have the '
+                         'same (name, tensor_indices) pari as an entry found '
+                         'in evolving_keys or state_keys, but this entry does '
+                         'not: {}'.format(key))
+
+  # TODO(shoyer): consider caching these properties, to avoid recomputing them.
+
+  @property
+  def all_keys(self) -> Set[str]:
+    """The set of all defined keys."""
+    return set(self.key_definitions)
+
+  @property
+  def base_keys(self) -> Set[str]:
+    """Keys corresponding to non-derived entries in the state.
+
+    Returns:
+      The union of evolving and constant keys.
+    """
+    return self.evolving_keys | self.constant_keys
+
+  @property
+  def derived_keys(self) -> Set[str]:
+    """Keys corresponding to derived entries in the state.
+
+    These can be estimated from other states using either learned or fixed
+    finite difference schemes.
+
+    Returns:
+      The set of defined keys not found in evolving_keys or constant_keys.
+    """
+    return set(self.key_definitions) - self.base_keys
+
+  def find_base_key(self, key: str) -> str:
+    """Find the matching "base" key from which to estimate this key."""
+    definition = self.key_definitions[key]
+    for candidate in self.base_keys:
+      candidate_def = self.key_definitions[candidate]
+      if (candidate_def.name == definition.name and
+          candidate_def.tensor_indices == definition.tensor_indices):
+        return candidate
+    raise AssertionError  # should be impossible per _validate_keys()
 
   def time_derivative(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid: grids.Grid, **inputs: tf.Tensor
+  ) -> Dict[str, tf.Tensor]:
     """Returns time derivative of the given state.
 
     Computes time derivatives of the state described by PDE using
     provided spatial derivatives.
 
     Args:
-      state: tensors corresponding to each key in STATE_KEYS, indicating the
-        current state.
-      inputs: tensors corresponding to each key in INPUT_KEYS.
       grid: description of discretization parameters.
-      time: time at which to evaluate time derivatives.
+      **inputs: tensors corresponding to each key in key_definitions.
 
     Returns:
       Time derivative for each non-constant term in the state.
@@ -97,12 +172,8 @@ class Equation(object):
     raise NotImplementedError
 
   def take_time_step(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid: grids.Grid, **inputs: tf.Tensor
+  ) -> Dict[str, tf.Tensor]:
     """Take single time-step.
 
     The time step will be of size self.get_time_step().
@@ -110,21 +181,16 @@ class Equation(object):
     The default implementation is an (explicit) forward Euler method.
 
     Args:
-      state: tensors corresponding to each key in STATE_KEYS, indicating the
-        current state.
-      inputs: tensors corresponding to each key in INPUT_KEYS.
       grid: description of discretization parameters.
-      time: time at which the step is taken.
+      **inputs: tensors corresponding to each key in key_definitions.
 
     Returns:
       Updated values for each non-constant term in the state.
     """
-    evolving_state = {k: v for k, v in state.items()
-                      if k not in self.CONSTANT_KEYS}
-    time_derivs = self.time_derivative(state, inputs, grid, time)
+    time_derivs = self.time_derivative(grid, **inputs)
     dt = self.get_time_step(grid)
-    new_state = {k: u + dt * time_derivs[k.time_derivative()]
-                 for k, u in evolving_state.items()}
+    new_state = {k: inputs[k] + dt * time_derivs[k]
+                 for k in self.evolving_keys}
     return new_state
 
   def random_state(
@@ -134,7 +200,7 @@ class Equation(object):
       size: Shape = (),
       seed: int = None,
       dtype: Any = np.float32,
-  ) -> Dict[states.StateKey, np.ndarray]:
+  ) -> Dict[str, np.ndarray]:
     """Returns a state with fully parametrized initial conditions.
 
     Generates initial conditions of `init_type`. All parameters of
@@ -179,8 +245,11 @@ class Equation(object):
     raise NotImplementedError
 
 
-def check_keys(dictionary: Dict[states.StateKey, Any],
-               expected_keys: Tuple[states.StateKey, ...]):
+T = TypeVar('T')
+
+
+def check_keys(dictionary: Dict[T, Any],
+               expected_keys: Tuple[T, ...]):
   """Checks if the dictionary keys match the expected keys.
 
   Args:

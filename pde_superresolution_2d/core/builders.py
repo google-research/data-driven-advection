@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +23,7 @@ from __future__ import division
 from __future__ import print_function
 
 import operator
+from typing import Dict, List, Mapping, Tuple, TypeVar
 
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
@@ -30,24 +32,24 @@ from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import integrate
 from pde_superresolution_2d.core import models
 from pde_superresolution_2d.core import states
-from pde_superresolution_2d.core import utils
 from pde_superresolution_2d.core import tensor_ops
+from pde_superresolution_2d.core import utils
 import tensorflow as tf
-from typing import Dict, List, Tuple, TypeVar
 
 nest = tf.contrib.framework.nest
 
 
-KeyedTensors = Dict[states.StateKey, tf.Tensor]
-StateGridTensors = Dict[Tuple[states.StateKey, grids.Grid], tf.Tensor]
-StatisticsDict = Dict[Tuple[states.StateKey, grids.Grid], Tuple[float, float]]
+KeyedTensors = Dict[states.StateDefinition, tf.Tensor]
+StateGridTensors = Dict[Tuple[states.StateDefinition, grids.Grid], tf.Tensor]
+StatisticsDict = Dict[
+    Tuple[states.StateDefinition, grids.Grid], Tuple[float, float]]
 
 
 def convert_to_tf_example(state: StateGridTensors) -> bytes:
   """Generates serialized tensorflow example holding dataset_states.
 
   Generates tf.Example from the states in dataset_states. The key is generated
-  from the StateKey and corresponding grid. Example is then serialized.
+  from the StateDefinition and corresponding grid. Example is then serialized.
 
   Args:
     state: A dict of states to be serialized.
@@ -70,7 +72,13 @@ def convert_to_tf_example(state: StateGridTensors) -> bytes:
   return example.SerializeToString()
 
 
-def unstack(state: KeyedTensors, num: int) -> List[KeyedTensors]:
+T = TypeVar('T')
+
+
+def unstack(
+    state: Mapping[T, tf.Tensor],
+    num: int,
+) -> List[Dict[T, tf.Tensor]]:
   """Unstack keyed tensors into a list."""
   unstacked = tf.contrib.framework.nest.map_structure(
       lambda x: tf.unstack(x, num), state)
@@ -82,11 +90,11 @@ def unstack(state: KeyedTensors, num: int) -> List[KeyedTensors]:
 
 
 def integrate_state(
-    state: KeyedTensors,
+    state: Dict[str, tf.Tensor],
     model: models.TimeStepModel,
     times: np.ndarray,
     example_time_steps: np.ndarray,
-) -> List[KeyedTensors]:
+) -> List[Dict[str, tf.Tensor]]:
   """Integrate the given state to produce training examples.
 
   Each result in the output is a short "movie" showing the evolution of the
@@ -104,8 +112,6 @@ def integrate_state(
     List of state dictionaries of tensors. Each tensor has dimensions
     [time, x, y], with the number of time steps equal to example_time_steps.
   """
-  # TODO(shoyer): instead of integrating twice, we could integrate just once and
-  # reshape the data. That would require a bit more book-keeping.
   integrated_once = integrate.integrate_times(model, state, times, axis=0)
   integrated_twice = tf.map_fn(
       lambda x: integrate.integrate_steps(model, x, example_time_steps),
@@ -158,13 +164,15 @@ class Builder(object):
   def coarse_model(self):
     return models.FiniteDifferenceModel(self.equation, self.output_grid)
 
-  def integrate(self, state: KeyedTensors) -> List[KeyedTensors]:
+  def integrate(
+      self, state: Dict[str, tf.Tensor]) -> List[Dict[str, tf.Tensor]]:
     assert tf.executing_eagerly()
     grid_ratio = int(round(self.output_grid.step / self.simulation_grid.step))
     example_time_steps = grid_ratio * np.arange(self.example_time_steps)
     return integrate_state(state, self.model, self.times, example_time_steps)
 
-  def postprocess(self, state: KeyedTensors) -> StateGridTensors:
+  def postprocess(
+      self, state: Dict[str, tf.Tensor]) -> StateGridTensors:
     """Post-process integrated states."""
     raise NotImplementedError
 
@@ -220,27 +228,29 @@ class Builder(object):
 class TimeDerivatives(Builder):
   """Provides functions to build dataset of states and time derivatives."""
 
-  def postprocess(self, state: KeyedTensors) -> StateGridTensors:
+  def postprocess(self, state: Dict[str, tf.Tensor]) -> StateGridTensors:
     """Resample states to low resolution."""
     result = []
+    key_defs = self.equation.key_definitions
 
     # solution
-    coarse_state = tensor_ops.resample_mean(
-        state, self.simulation_grid, self.output_grid)
+    coarse_state = tensor_ops.regrid(
+        state, key_defs, self.simulation_grid, self.output_grid)
     for k, v in coarse_state.items():
-      result.append(((k.exact(), self.output_grid), v))
+      result.append(((key_defs[k].exact(), self.output_grid), v))
 
     # time derivatives
     time_derivative = self.model.time_derivative(state)
 
-    coarse_time_derivative = tensor_ops.resample_mean(
-        time_derivative, self.simulation_grid, self.output_grid)
+    coarse_time_derivative = tensor_ops.regrid(
+        time_derivative, key_defs, self.simulation_grid, self.output_grid)
     for k, v in coarse_time_derivative.items():
-      result.append(((k.exact(), self.output_grid), v))
+      key = (key_defs[k].time_derivative().exact(), self.output_grid)
+      result.append((key, v))
 
     baseline_time_derivative = self.coarse_model.time_derivative(coarse_state)
     for k, v in baseline_time_derivative.items():
-      result.append(((k.baseline(), self.output_grid), v))
+      result.append(((key_defs[k].baseline(), self.output_grid), v))
 
     return merge(result)
 
@@ -248,41 +258,44 @@ class TimeDerivatives(Builder):
 class AllDerivatives(Builder):
   """Provides functions to build dataset of states and all derivatives."""
 
-  def postprocess(self, state: KeyedTensors) -> StateGridTensors:
+  def postprocess(self, state: Dict[str, tf.Tensor]) -> StateGridTensors:
     """Post-process integrated states."""
     result = []
+    key_defs = self.equation.key_definitions
 
     # solution
-    coarse_state = tensor_ops.resample_mean(
-        state, self.simulation_grid, self.output_grid)
+    coarse_state = tensor_ops.regrid(
+        state, key_defs, self.simulation_grid, self.output_grid)
     for k, v in coarse_state.items():
-      result.append(((k.exact(), self.output_grid), v))
+      result.append(((key_defs[k].exact(), self.output_grid), v))
 
     # spatial derivatives
     spatial_derivatives = self.model.spatial_derivatives(state)
-    coarse_spatial_derivatives = tensor_ops.resample_mean(
-        spatial_derivatives, self.simulation_grid, self.output_grid)
+    coarse_spatial_derivatives = tensor_ops.regrid(
+        spatial_derivatives, key_defs, self.simulation_grid, self.output_grid)
     for k, v in coarse_spatial_derivatives.items():
       if k not in state:
-        result.append(((k.exact(), self.output_grid), v))
+        result.append(((key_defs[k].exact(), self.output_grid), v))
 
     baseline_spatial_derivatives = self.coarse_model.spatial_derivatives(
         coarse_state)
     for k, v in baseline_spatial_derivatives.items():
       if k not in state:
-        result.append(((k.baseline(), self.output_grid), v))
+        result.append(((key_defs[k].baseline(), self.output_grid), v))
 
     # time derivatives
     time_derivative = self.model.time_derivative(state)
 
-    coarse_time_derivative = tensor_ops.resample_mean(
-        time_derivative, self.simulation_grid, self.output_grid)
+    coarse_time_derivative = tensor_ops.regrid(
+        time_derivative, key_defs, self.simulation_grid, self.output_grid)
     for k, v in coarse_time_derivative.items():
-      result.append(((k.exact(), self.output_grid), v))
+      key = (key_defs[k].time_derivative().exact(), self.output_grid)
+      result.append((key, v))
 
     baseline_time_derivative = self.coarse_model.time_derivative(coarse_state)
     for k, v in baseline_time_derivative.items():
-      result.append(((k.baseline(), self.output_grid), v))
+      key = (key_defs[k].time_derivative().baseline(), self.output_grid)
+      result.append((key, v))
 
     return merge(result)
 
@@ -290,22 +303,25 @@ class AllDerivatives(Builder):
 class HighResolution(Builder):
   """Provides functions to build dataset of states at high resolution."""
 
-  def postprocess(self, state: KeyedTensors) -> StateGridTensors:
-    return {(k.exact(), self.simulation_grid): v for k, v in state.items()}
+  def postprocess(self, state: Dict[str, tf.Tensor]) -> StateGridTensors:
+    key_defs = self.equation.key_definitions
+    return {(key_defs[k].exact(), self.simulation_grid): v
+            for k, v in state.items()}
 
 
 class TimeEvolution(Builder):
   """Save the results of time-evolution."""
 
-  def postprocess(self, state: KeyedTensors) -> StateGridTensors:
+  def postprocess(self, state: Dict[str, tf.Tensor]) -> StateGridTensors:
     """Resample states to low resolution."""
     result = []
+    key_defs = self.equation.key_definitions
 
     # exact solution
-    coarse_state = tensor_ops.resample_mean(
-        state, self.simulation_grid, self.output_grid)
+    coarse_state = tensor_ops.regrid(
+        state, key_defs, self.simulation_grid, self.output_grid)
     for k, v in coarse_state.items():
-      result.append(((k.exact(), self.output_grid), v))
+      result.append(((key_defs[k].exact(), self.output_grid), v))
 
     # baseline solution
     initial_coarse_state = nest.map_structure(
@@ -314,7 +330,7 @@ class TimeEvolution(Builder):
         self.coarse_model, initial_coarse_state,
         np.arange(self.example_time_steps))
     for k, v in integrated_baseline.items():
-      result.append(((k.baseline(), self.output_grid), v))
+      result.append(((key_defs[k].baseline(), self.output_grid), v))
 
     return merge(result)
 

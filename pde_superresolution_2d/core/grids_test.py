@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,10 +18,9 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+from pde_superresolution_2d.core import grids
 
 from absl.testing import absltest
-
-from pde_superresolution_2d.core import grids
 
 
 class GridTest(absltest.TestCase):
@@ -39,8 +39,8 @@ class GridTest(absltest.TestCase):
 
   def test_mesh_shifts(self):
     mesh_x, mesh_y = self.test_grid.get_mesh()
-    self.assertAlmostEqual(mesh_x[-1, 0], self.length - self.step)
-    self.assertAlmostEqual(mesh_y[0, -1], self.length - self.step)
+    self.assertAlmostEqual(mesh_x[-1, 0], self.length - self.step / 2)
+    self.assertAlmostEqual(mesh_y[0, -1], self.length - self.step / 2)
     shifted_x, shifted_y = self.test_grid.get_mesh(shift=(1, 0))
     half_step = self.step / 2.
     np.testing.assert_allclose(shifted_x - mesh_x,

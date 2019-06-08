@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +19,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import enum
 import functools
+import operator
+from typing import Any, Dict, Tuple, Union
 
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
@@ -28,34 +32,28 @@ from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
 import tensorflow as tf
-from typing import Any, Dict, Tuple, Union
 
-C = states.StateKey('concentration', (0, 0, 0), (0, 0))
-C_EDGE_X = states.StateKey('concentration', (0, 0, 0), (1, 0))
-C_EDGE_Y = states.StateKey('concentration', (0, 0, 0), (0, 1))
-C_X = states.StateKey('concentration', (1, 0, 0), (0, 0))
-C_Y = states.StateKey('concentration', (0, 1, 0), (0, 0))
-C_T = states.StateKey('concentration', (0, 0, 1), (0, 0))
-C_X_EDGE_X = states.StateKey('concentration', (1, 0, 0), (1, 0))
-C_Y_EDGE_Y = states.StateKey('concentration', (0, 1, 0), (0, 1))
-C_XX = states.StateKey('concentration', (2, 0, 0), (0, 0))
-C_YY = states.StateKey('concentration', (0, 2, 0), (0, 0))
 
-VX = states.StateKey('velocity_x', (0, 0, 0), (0, 0))
-VY = states.StateKey('velocity_y', (0, 0, 0), (0, 0))
-VX_EDGE_X = states.StateKey('velocity_x', (0, 0, 0), (1, 0))
-VY_EDGE_Y = states.StateKey('velocity_y', (0, 0, 0), (0, 1))
+StateDef = states.StateDefinition
 
-KeyedTensors = Dict[states.StateKey, tf.Tensor]
+X = states.Dimension.X
+Y = states.Dimension.Y
+
+NO_DERIVATIVES = (0, 0, 0)
+D_X = (1, 0, 0)
+D_Y = (0, 1, 0)
+D_XX = (2, 0, 0)
+D_YY = (0, 2, 0)
+
+NO_OFFSET = (0, 0)
+X_PLUS_HALF = (1, 0)
+Y_PLUS_HALF = (0, 1)
+
 ArrayLike = Union[np.ndarray, np.generic, float]
 Shape = Union[int, Tuple[int]]
 
 # numpy.random.RandomState uses uint32 for seeds
 MAX_SEED_PLUS_ONE = 2**32
-
-# We really are using native Python strings everywhere (no serialization to
-# bytes/unicode is involved)
-# pylint: disable=g-ambiguous-str-annotation
 
 
 class _AdvectionDiffusionBase(equations.Equation):
@@ -76,7 +74,7 @@ class _AdvectionDiffusionBase(equations.Equation):
       size: Shape = (),
       seed: int = None,
       dtype: Any = np.float32,
-  ) -> Dict[states.StateKey, np.ndarray]:
+  ) -> Dict[str, np.ndarray]:
     """Returns a state with random initial conditions for a given ensemble.
 
     Args:
@@ -111,11 +109,10 @@ class _AdvectionDiffusionBase(equations.Equation):
       params['velocity']['seed'] = random.randint(MAX_SEED_PLUS_ONE)
 
     state = {}
-    state[C] = self.random_concentration(
+    state['concentration'] = self.random_concentration(
         grid, size, **params['concentration'])
 
-    vx_key, vy_key = self.CONSTANT_KEYS
-    state[vx_key], state[vy_key] = self.random_velocities(
+    state['x_velocity'], state['y_velocity'] = self.random_velocities(
         grid, size, **params['velocity'])
 
     state = {k: v.astype(dtype) for k, v in state.items()}
@@ -126,14 +123,23 @@ class _AdvectionDiffusionBase(equations.Equation):
                            grid: grids.Grid,
                            size: Shape = (),
                            method: str = 'sum_of_gaussians',
+                           normalize: bool = True,
+                           binarize_center: float = 0.5,
+                           binarize_slope: float = 1.0,
                            **kwargs: Any) -> np.ndarray:
     """Create a random concentration."""
     if method == 'sum_of_gaussians':
-      return random_sum_of_gaussians(grid=grid, size=size, **kwargs)
+      concentration = random_sum_of_gaussians(
+          grid=grid, size=size, normalize=normalize, **kwargs)
     elif method == 'fourier_series':
-      return random_fourier_series(grid=grid, size=size, **kwargs)
+      concentration = random_fourier_series(
+          grid=grid, size=size, normalize=normalize, **kwargs)
     else:
       raise ValueError('initialization method not supported: {}'.format(method))
+
+    concentration = binarize(concentration, binarize_center, binarize_slope)
+
+    return concentration
 
   def random_velocities(self, grid: grids.Grid, size: Shape = (),
                         **kwargs: Any) -> Tuple[np.ndarray, np.ndarray]:
@@ -141,22 +147,20 @@ class _AdvectionDiffusionBase(equations.Equation):
 
     v_field = velocity_fields.ConstantVelocityField.from_seed(**kwargs)
 
-    vx_key, vy_key = self.CONSTANT_KEYS
-    assert vx_key.name == 'velocity_x'
-    assert vy_key.name == 'velocity_y'
-
     if isinstance(size, int):
       size = (size,)
     state_shape = size + (grid.size_x, grid.size_y)
 
-    # finite differences represents the solution at points;
-    # finite volumes represents the solution over unit-cells.
-    cell_average = (
+    # finite differences represents velocities at points;
+    # finite volumes represents velocities over the faces of unit-cells.
+    face_average = (
         self.METHOD != metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE)
+    shift_vx = self.key_definitions['x_velocity'].offset
+    shift_vy = self.key_definitions['y_velocity'].offset
     vx = v_field.get_velocity_x(
-        t=0, grid=grid, shift=vx_key.offset, cell_average=cell_average)
+        t=0, grid=grid, shift=shift_vx, face_average=face_average)
     vy = v_field.get_velocity_y(
-        t=0, grid=grid, shift=vy_key.offset, cell_average=cell_average)
+        t=0, grid=grid, shift=shift_vy, face_average=face_average)
     return np.broadcast_to(vx, state_shape), np.broadcast_to(vy, state_shape)
 
   def get_time_step(self, grid: grids.Grid, max_velocity: float = 1.0) -> float:
@@ -233,6 +237,7 @@ class AdvectionDiffusion(_AdvectionDiffusionBase):
   ):
     self._diffusion_coefficient = diffusion_coefficient
     self._cfl_safety_factor = cfl_safety_factor
+    super(AdvectionDiffusion, self).__init__()
 
   @property
   def diffusion_coefficient(self) -> float:
@@ -246,7 +251,8 @@ class AdvectionDiffusion(_AdvectionDiffusionBase):
   def from_proto(cls, proto: metadata_pb2.AdvectionDiffusionEquation
                 ) -> equations.Equation:
     """Construct an equation from a protocol buffer."""
-    return cls(proto.diffusion_coefficient, proto.cfl_safety_factor)
+    return cls(diffusion_coefficient=proto.diffusion_coefficient,
+               cfl_safety_factor=proto.cfl_safety_factor)
 
   def to_proto(self) -> metadata_pb2.Equation:
     """Creates a protocol buffer holding parameters of the equation."""
@@ -269,6 +275,7 @@ class Advection(_AdvectionDiffusionBase):
 
   def __init__(self, cfl_safety_factor: float = 0.9):
     self._cfl_safety_factor = cfl_safety_factor
+    super(Advection, self).__init__()
 
   @property
   def diffusion_coefficient(self) -> float:
@@ -282,7 +289,7 @@ class Advection(_AdvectionDiffusionBase):
   def from_proto(cls, proto: metadata_pb2.AdvectionEquation
                 ) -> equations.Equation:
     """Construct an equation from a protocol buffer."""
-    return cls(proto.cfl_safety_factor)
+    return cls(cfl_safety_factor=proto.cfl_safety_factor)
 
   def to_proto(self) -> metadata_pb2.Equation:
     """Creates a protocol buffer holding parameters of the equation."""
@@ -299,36 +306,37 @@ class Advection(_AdvectionDiffusionBase):
 
 
 class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
-  """"Finite difference advection-diffusion."""
+  """Finite difference advection-diffusion."""
   DISCRETIZATION_NAME = 'finite_difference'
   METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
   MONOTONIC = False
 
-  STATE_KEYS = (C, VX, VY)
-  CONSTANT_KEYS = (VX, VY)
-  INPUT_KEYS = (VX, VY, C_X, C_Y, C_XX, C_YY)
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, NO_OFFSET),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, NO_OFFSET),
+        'concentration_x': StateDef('concentration', (), D_X, NO_OFFSET),
+        'concentration_y': StateDef('concentration', (), D_Y, NO_OFFSET),
+        'concentration_xx': StateDef('concentration', (), D_XX, NO_OFFSET),
+        'concentration_yy': StateDef('concentration', (), D_YY, NO_OFFSET),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
+    super(FiniteDifferenceAdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid, concentration, x_velocity, y_velocity, concentration_x,
+      concentration_y, concentration_xx, concentration_yy):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-
-    v_x = inputs[VX]
-    v_y = inputs[VY]
-    c_x = inputs[C_X]
-    c_y = inputs[C_Y]
-    c_xx = inputs[C_XX]
-    c_yy = inputs[C_YY]
-
+    del grid, concentration  # unused
     D = self.diffusion_coefficient  # pylint: disable=invalid-name
-    c_t = -(v_x * c_x + v_y * c_y) + D * (c_xx + c_yy)
-    return {C_T: c_t}
+    c_t = (
+        -(x_velocity * concentration_x + y_velocity * concentration_y)
+        + D * (concentration_xx + concentration_yy)
+    )
+    return {'concentration': c_t}
 
 
 class FiniteDifferenceAdvection(Advection):
@@ -337,36 +345,36 @@ class FiniteDifferenceAdvection(Advection):
   METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
   MONOTONIC = False
 
-  STATE_KEYS = (C, VX, VY)
-  CONSTANT_KEYS = (VX, VY)
-  INPUT_KEYS = (VX, VY, C_X, C_Y)
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, NO_OFFSET),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, NO_OFFSET),
+        'concentration_x': StateDef('concentration', (), D_X, NO_OFFSET),
+        'concentration_y': StateDef('concentration', (), D_Y, NO_OFFSET),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
+    super(FiniteDifferenceAdvection, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid, concentration, x_velocity, y_velocity,
+      concentration_x, concentration_y):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-    v_x = inputs[VX]
-    v_y = inputs[VY]
-    c_x = inputs[C_X]
-    c_y = inputs[C_Y]
-    c_t = -(v_x * c_x + v_y * c_y)
-    return {C_T: c_t}
+    del grid, concentration  # unused
+    c_t = -(x_velocity * concentration_x + y_velocity * concentration_y)
+    return {'concentration': c_t}
 
 
-def _flux_to_time_derivative(flux_x_edge_x, flux_y_edge_y, grid_step):
+def flux_to_time_derivative(x_flux_edge_x, y_flux_edge_y, grid_step):
   """Use continuity to convert from fluxes to a time derivative."""
   # right - left + top - bottom
   numerator = tf.add_n([
-      flux_x_edge_x,
-      -tensor_ops.roll_2d(flux_x_edge_x, (1, 0)),
-      flux_y_edge_y,
-      -tensor_ops.roll_2d(flux_y_edge_y, (0, 1)),
+      x_flux_edge_x,
+      -tensor_ops.roll_2d(x_flux_edge_x, (1, 0)),
+      y_flux_edge_y,
+      -tensor_ops.roll_2d(y_flux_edge_y, (0, 1)),
   ])
   return -(1 / grid_step) * numerator
 
@@ -378,35 +386,35 @@ class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
   METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
   MONOTONIC = False
 
-  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
-  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
-  INPUT_KEYS = (
-      VX_EDGE_X, VY_EDGE_Y, C_EDGE_X, C_EDGE_Y, C_X_EDGE_X, C_Y_EDGE_Y,
-  )
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, X_PLUS_HALF),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, Y_PLUS_HALF),
+        'concentration_edge_x':
+            StateDef('concentration', (), NO_DERIVATIVES, X_PLUS_HALF),
+        'concentration_edge_y':
+            StateDef('concentration', (), NO_DERIVATIVES, Y_PLUS_HALF),
+        'concentration_x_edge_x':
+            StateDef('concentration', (), D_X, X_PLUS_HALF),
+        'concentration_y_edge_y':
+            StateDef('concentration', (), D_Y, Y_PLUS_HALF),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
+    super(FiniteVolumeAdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid, concentration, x_velocity, y_velocity, concentration_edge_x,
+      concentration_edge_y, concentration_x_edge_x, concentration_y_edge_y):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-
-    v_x = inputs[VX_EDGE_X]
-    v_y = inputs[VY_EDGE_Y]
-    c_edge_x = inputs[C_EDGE_X]
-    c_edge_y = inputs[C_EDGE_Y]
-    c_x_edge_x = inputs[C_X_EDGE_X]
-    c_y_edge_y = inputs[C_Y_EDGE_Y]
-
+    del concentration  # unused
     D = self.diffusion_coefficient  # pylint: disable=invalid-name
-    flux_x = v_x * c_edge_x - D * c_x_edge_x
-    flux_y = v_y * c_edge_y - D * c_y_edge_y
-    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
-    return {C_T: c_t}
+    x_flux = x_velocity * concentration_edge_x - D * concentration_x_edge_x
+    y_flux = y_velocity * concentration_edge_y - D * concentration_y_edge_y
+    c_t = flux_to_time_derivative(x_flux, y_flux, grid.step)
+    return {'concentration': c_t}
 
 
 class FiniteVolumeAdvection(Advection):
@@ -416,30 +424,30 @@ class FiniteVolumeAdvection(Advection):
   METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
   MONOTONIC = False
 
-  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
-  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
-  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C_EDGE_X, C_EDGE_Y)
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, X_PLUS_HALF),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, Y_PLUS_HALF),
+        'concentration_edge_x':
+            StateDef('concentration', (), NO_DERIVATIVES, X_PLUS_HALF),
+        'concentration_edge_y':
+            StateDef('concentration', (), NO_DERIVATIVES, Y_PLUS_HALF),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
+    super(FiniteVolumeAdvection, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid, concentration, x_velocity, y_velocity, concentration_edge_x,
+      concentration_edge_y):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-
-    v_x = inputs[VX_EDGE_X]
-    v_y = inputs[VY_EDGE_Y]
-    c_edge_x = inputs[C_EDGE_X]
-    c_edge_y = inputs[C_EDGE_Y]
-
-    flux_x = v_x * c_edge_x
-    flux_y = v_y * c_edge_y
-    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
-    return {C_T: c_t}
+    del concentration  # unused
+    x_flux = x_velocity * concentration_edge_x
+    y_flux = y_velocity * concentration_edge_y
+    c_t = flux_to_time_derivative(x_flux, y_flux, grid.step)
+    return {'concentration': c_t}
 
 
 class UpwindAdvectionDiffusion(AdvectionDiffusion):
@@ -449,35 +457,36 @@ class UpwindAdvectionDiffusion(AdvectionDiffusion):
   METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
   MONOTONIC = True
 
-  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
-  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
-  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C, C_X_EDGE_X, C_Y_EDGE_Y)
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, X_PLUS_HALF),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, Y_PLUS_HALF),
+        'concentration_x_edge_x':
+            StateDef('concentration', (), D_X, X_PLUS_HALF),
+        'concentration_y_edge_y':
+            StateDef('concentration', (), D_Y, Y_PLUS_HALF),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
+    super(UpwindAdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid, concentration, x_velocity, y_velocity, concentration_x_edge_x,
+      concentration_y_edge_y):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-
-    v_x = inputs[VX_EDGE_X]
-    v_y = inputs[VY_EDGE_Y]
-    c = inputs[C]
-    c_x_edge_x = inputs[C_X_EDGE_X]
-    c_y_edge_y = inputs[C_Y_EDGE_Y]
-
+    c = concentration
     c_right = tensor_ops.roll_2d(c, (-1, 0))
     c_top = tensor_ops.roll_2d(c, (0, -1))
 
     D = self.diffusion_coefficient  # pylint: disable=invalid-name
-    flux_x = v_x * tf.where(v_x > 0, c, c_right) - D * c_x_edge_x
-    flux_y = v_y * tf.where(v_y > 0, c, c_top) - D * c_y_edge_y
-    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
-    return {C_T: c_t}
+    x_flux = (x_velocity * tf.where(x_velocity > 0, c, c_right)
+              - D * concentration_x_edge_x)
+    y_flux = (y_velocity * tf.where(y_velocity > 0, c, c_top)
+              - D * concentration_y_edge_y)
+    c_t = flux_to_time_derivative(x_flux, y_flux, grid.step)
+    return {'concentration': c_t}
 
 
 class UpwindAdvection(Advection):
@@ -487,32 +496,27 @@ class UpwindAdvection(Advection):
   METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
   MONOTONIC = True
 
-  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
-  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
-  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C)
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, X_PLUS_HALF),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, Y_PLUS_HALF),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
+    super(UpwindAdvection, self).__init__(*args, **kwargs)
 
-  def time_derivative(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+  def time_derivative(self, grid, concentration, x_velocity, y_velocity):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-
-    v_x = inputs[VX_EDGE_X]
-    v_y = inputs[VY_EDGE_Y]
-    c = inputs[C]
-
+    c = concentration
     c_right = tensor_ops.roll_2d(c, (-1, 0))
     c_top = tensor_ops.roll_2d(c, (0, -1))
 
-    flux_x = v_x * tf.where(v_x > 0, c, c_right)
-    flux_y = v_y * tf.where(v_y > 0, c, c_top)
-    c_t = _flux_to_time_derivative(flux_x, flux_y, grid.step)
-    return {C_T: c_t}
+    x_flux = x_velocity * tf.where(x_velocity > 0, c, c_right)
+    y_flux = y_velocity * tf.where(y_velocity > 0, c, c_top)
+    c_t = flux_to_time_derivative(x_flux, y_flux, grid.step)
+    return {'concentration': c_t}
 
 
 def _minimum(*args):
@@ -523,7 +527,19 @@ def _maximum(*args):
   return functools.reduce(tf.maximum, args)
 
 
-def _tendency_vanleer_1d(c, v, dx, dt, axis, c_x=None, diffusion_coefficient=0):
+class Limiter(enum.Enum):
+  """Enum representing flux limiter options.
+
+  For monotonic constraints on VanLeerAdvection.
+  """
+  LOCAL = 1
+  GLOBAL = 2
+  POSITIVE = 3
+  NONE = 4
+
+
+def _tendency_vanleer_1d(c, v, dx, dt, axis, c_x=None, diffusion_coefficient=0,
+                         limiter=Limiter.LOCAL):
   """Calculate the tendency in a single direction."""
 
   # To match our indexing convention with the paper, note:
@@ -545,10 +561,33 @@ def _tendency_vanleer_1d(c, v, dx, dt, axis, c_x=None, diffusion_coefficient=0):
   delta_average = 0.5 * (delta + roll_plus_one(delta))  # i+1/2
 
   # all defined at i+1/2
-  c_min = _minimum(c_left, c, c_right)
-  c_max = _maximum(c_left, c, c_right)
-  mismatch = tf.sign(delta_average) * _minimum(
-      abs(delta_average), 2 * (c - c_min), 2 * (c_max - c))
+  if limiter is Limiter.LOCAL:
+    # local bounds (from neighbouring values) for concentrations
+    c_min = _minimum(c_left, c, c_right)
+    c_max = _maximum(c_left, c, c_right)
+    mismatch = tf.sign(delta_average) * _minimum(
+        abs(delta_average), 2 * (c - c_min), 2 * (c_max - c))
+
+  elif limiter is Limiter.GLOBAL:
+    # pre-defined global bounds for concentraions, less diffusive than 'mono5'
+    c_min = 0.0
+    c_max = 1.0
+    mismatch = tf.sign(delta_average) * _minimum(
+        abs(delta_average),
+        2 * tf.maximum(c - c_min, 0),
+        2 * tf.maximum(c_max - c, 0))
+
+  elif limiter is Limiter.POSITIVE:
+    # only positive definite constraint (i.e. one-sided global limiter)
+    mismatch = tf.sign(delta_average) * tf.minimum(
+        abs(delta_average), 2 * c)
+
+  elif limiter is Limiter.NONE:
+    # vanilla second-order discretization, no monotonic constraints
+    mismatch = delta_average
+
+  else:
+    raise ValueError('unimplemented limiter')
 
   # all defined at i+1
   # in the paper's notation: (1/2) * (1 -/+ C_{-/+})
@@ -579,94 +618,100 @@ class VanLeerMono5AdvectionDiffusion(AdvectionDiffusion):
   METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
   MONOTONIC = True
 
-  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
-  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
-  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C, C_X_EDGE_X, C_Y_EDGE_Y)
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, X_PLUS_HALF),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, Y_PLUS_HALF),
+        'concentration_x_edge_x':
+            StateDef('concentration', (), D_X, X_PLUS_HALF),
+        'concentration_y_edge_y':
+            StateDef('concentration', (), D_Y, Y_PLUS_HALF),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
+    super(VanLeerMono5AdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def take_time_step(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+      self, grid, concentration, x_velocity, y_velocity, concentration_x_edge_x,
+      concentration_y_edge_y):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-
-    v_x = inputs[VX_EDGE_X]
-    v_y = inputs[VY_EDGE_Y]
-    c = inputs[C]
-    c_x = inputs[C_X_EDGE_X]
-    c_y = inputs[C_Y_EDGE_Y]
-
     dx = dy = grid.step
     dt = self.get_time_step(grid)
     D = self.diffusion_coefficient  # pylint: disable=invalid-name
     x_axis = -2
     y_axis = -1
+    c = concentration
     tendency_x_then_y = _tendency_vanleer_1d(
-        c + 0.5 * _tendency_vanleer_1d(c, v_x, dx, dt, x_axis, c_x, D),
-        v_y, dy, dt, y_axis, c_y, D)
+        c + 0.5 * _tendency_vanleer_1d(
+            c, x_velocity, dx, dt, x_axis, concentration_x_edge_x, D),
+        y_velocity, dy, dt, y_axis, concentration_y_edge_y, D)
     tendency_y_then_x = _tendency_vanleer_1d(
-        c + 0.5 * _tendency_vanleer_1d(c, v_y, dy, dt, y_axis, c_y, D),
-        v_x, dx, dt, x_axis, c_x, D)
-    c_next = tf.add_n([state[C], tendency_x_then_y, tendency_y_then_x])
-    return {C: c_next}
+        c + 0.5 * _tendency_vanleer_1d(
+            c, y_velocity, dy, dt, y_axis, concentration_y_edge_y, D),
+        x_velocity, dx, dt, x_axis, concentration_x_edge_x, D)
+    c_next = tf.add_n([c, tendency_x_then_y, tendency_y_then_x])
+    return {'concentration': c_next}
 
 
-class VanLeerMono5Advection(Advection):
+class VanLeerAdvection(Advection):
   """Second order upwind finite-volume scheme for advection only.
 
-  Based on the "mono-5" limiter from
+  Based on various flux limiters from
   Lin, S.-J., et al. (1994). "A class of the van Leer-type transport schemes
   and its application to the moisture transport in a general circulation
   model."
   """
 
-  DISCRETIZATION_NAME = 'van_leer_mono5'
+  DISCRETIZATION_NAME = 'van_leer'
   METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
   MONOTONIC = True
 
-  STATE_KEYS = (C, VX_EDGE_X, VY_EDGE_Y)
-  CONSTANT_KEYS = (VX_EDGE_X, VY_EDGE_Y)
-  INPUT_KEYS = (VX_EDGE_X, VY_EDGE_Y, C)
+  def __init__(self, *args, **kwargs):
+    self.key_definitions = {
+        'concentration':
+            StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'x_velocity': StateDef('velocity', (X,), NO_DERIVATIVES, X_PLUS_HALF),
+        'y_velocity': StateDef('velocity', (Y,), NO_DERIVATIVES, Y_PLUS_HALF),
+    }
+    self.evolving_keys = {'concentration'}
+    self.constant_keys = {'x_velocity', 'y_velocity'}
 
-  def take_time_step(
-      self,
-      state: KeyedTensors,
-      inputs: KeyedTensors,
-      grid: grids.Grid,
-      time: float = 0.0,
-  ) -> KeyedTensors:
+    limiter = kwargs.pop('limiter', Limiter.LOCAL)
+    # catch invalid limiter early, not until time stepping
+    if not isinstance(limiter, Limiter):
+      raise ValueError('must use the Limiter enum')
+    self.limiter = limiter
+
+    super(VanLeerAdvection, self).__init__(*args, **kwargs)
+
+  def take_time_step(self, grid, concentration, x_velocity, y_velocity):
     """See base class."""
-    del time  # unused
-    equations.check_keys(inputs, self.INPUT_KEYS)
-
-    v_x = inputs[VX_EDGE_X]
-    v_y = inputs[VY_EDGE_Y]
-    c = inputs[C]
-
     dx = dy = grid.step
     dt = self.get_time_step(grid)
     x_axis = -2
     y_axis = -1
-    tendency_x_then_y = _tendency_vanleer_1d(
-        c + 0.5 * _tendency_vanleer_1d(c, v_x, dx, dt, axis=x_axis),
-        v_y, dy, dt, axis=y_axis)
-    tendency_y_then_x = _tendency_vanleer_1d(
-        c + 0.5 * _tendency_vanleer_1d(c, v_y, dy, dt, axis=y_axis),
-        v_x, dx, dt, axis=x_axis)
-    c_next = tf.add_n([state[C], tendency_x_then_y, tendency_y_then_x])
-    return {C: c_next}
+    c = concentration
+
+    _tendency_1d = functools.partial(_tendency_vanleer_1d, limiter=self.limiter)
+    tendency_x_then_y = _tendency_1d(
+        c + 0.5 * _tendency_1d(c, x_velocity, dx, dt, axis=x_axis),
+        y_velocity, dy, dt, axis=y_axis)
+    tendency_y_then_x = _tendency_1d(
+        c + 0.5 * _tendency_1d(c, y_velocity, dy, dt, axis=y_axis),
+        x_velocity, dx, dt, axis=x_axis)
+    c_next = tf.add_n([c, tendency_x_then_y, tendency_y_then_x])
+    return {'concentration': c_next}
 
 
 def random_fourier_series(
     grid: grids.Grid,
     size: Shape = (),
     seed: int = None,
-    num_terms: int = 5,
     max_periods: int = 4,
+    power_law: float = -1.5,
+    power_law_threshold: float = 1,
     normalize: bool = True,
     lower_bound: float = 1e-3,
     upper_bound: float = 1.0,
@@ -677,8 +722,10 @@ def random_fourier_series(
     grid: grid on which initial conditions are evaluated.
     size: leading "batch" dimensions to include on output tensors.
     seed: random seed to use for random number generator.
-    num_terms: number of random fourier terms.
     max_periods: maximum number of x/y periods for fourier terms.
+    power_law: power law for the amplitude of fourier components.
+    power_law_threshold: threshold wavenumber at which to start applying the
+      the power law. Lower wave numbers will have a constant amplitude.
     normalize: if true, normalize the values to fall within the range
       [lower_bound, upper_bound].
     lower_bound: lower bound for values.
@@ -692,32 +739,71 @@ def random_fourier_series(
 
   random = np.random.RandomState(seed=seed)
 
-  # dimensions [..., 1, 1, term]
-  event_shape = size + (1, 1, num_terms)
-  amplitude = random.random_sample(size=event_shape)
-  kx = random.randint(-max_periods, max_periods + 1, size=event_shape)
-  ky = random.randint(-max_periods, max_periods + 1, size=event_shape)
-  phase = random.random_sample(size=event_shape)
+  ks = np.arange(-max_periods, max_periods + 1)
+  k_x, k_y = [k.ravel() for k in np.meshgrid(ks, ks, indexing='ij')]
+  k_mag = (k_x ** 2 + k_y ** 2) ** 0.5
+  scale = np.where(k_mag >= power_law_threshold,
+                   (k_mag / power_law_threshold) ** float(power_law),
+                   1.0)
 
-  # dimensions [..., x, y, 1]
   x, y = grid.get_mesh()
-  x = x.reshape((1,) * len(size) + x.shape + (1,))
-  y = y.reshape((1,) * len(size) + y.shape + (1,))
-
-  # dimensions [..., x, y, term]
-  terms = amplitude * np.sin(
-      2 * np.pi * (kx * x / grid.length_x + ky * y / grid.length_y + phase))
+  grid_shape = (1,) * len(size) + grid.shape
   # dimensions [..., x, y]
-  distribution = np.sum(terms, axis=-1)
+  relative_x = x.reshape(grid_shape) / grid.length_x
+  relative_y = y.reshape(grid_shape) / grid.length_y
+
+  # loop in ascending order of wavenumber: this reduces memory cost (compared
+  # to allocating a single array for all wavenumers) and ensures that changing
+  # max_periods doesn't change random number generation for lower order terms.
+  distribution = np.zeros(size + grid.shape)
+  for _, current_k_x, current_k_y, current_scale in sorted(
+      zip(k_mag, k_x, k_y, scale), key=operator.itemgetter(0)):
+    # dimensions [..., x, y]
+    event_shape = size + (1, 1)
+    amplitude = current_scale * random.random_sample(size=event_shape)
+    random_cycles = random.random_sample(size=event_shape)
+    cycles = (current_k_x * relative_x
+              + current_k_y * relative_y
+              + random_cycles)
+    distribution += amplitude * np.sin(2 * np.pi * cycles)
 
   if normalize:
+    distribution_min = distribution.min(axis=(-1, -2), keepdims=True)
     distribution_range = (
-        distribution.max(axis=(-1, -2), keepdims=True) - distribution.min(
-            axis=(-1, -2), keepdims=True))
+        distribution.max(axis=(-1, -2), keepdims=True) - distribution_min)
     scale = (upper_bound - lower_bound) / distribution_range
-    distribution = scale * distribution + lower_bound
+    distribution = scale * (distribution - distribution_min) + lower_bound
 
   return distribution
+
+
+def _logit(p):
+  p = np.clip(p, 1e-8, 1 - 1e-8)
+  return np.log(p / (1 - p))
+
+
+def _sigmoid(x):
+  return 1 / (1 + np.exp(-x))
+
+
+def binarize(
+    p: np.ndarray, center: float = 0.5, slope: float = 1.0,
+) -> np.ndarray:
+  """Smoothly binarize a numpy array via logit and sigmoid transformations.
+
+  Args:
+    p: numpy array with values between 0 and 1.
+    center: value in p at which to center the binarization.
+    slope: slope of binarization. A slope of 1 means no binarization.
+
+  Returns:
+    A binarized function.
+  """
+  if slope <= 0:
+    raise ValueError('slope must be positive')
+  if not 0 < center < 1:
+    raise ValueError('center must be between 0 and 1')
+  return _sigmoid(slope * (_logit(p) - _logit(center)))
 
 
 def _gaussian(
@@ -776,6 +862,7 @@ def random_sum_of_gaussians(
     grid: grid on which initial conditions are evaluated.
     size: leading "batch" dimensions to include on output tensors.
     seed: random seed to use for random number generator.
+    num_terms: number of gaussians to include.
     gaussian_width: width of the gaussian measured in units of x.
     normalize: if true, normalize the maximum value to one.
 

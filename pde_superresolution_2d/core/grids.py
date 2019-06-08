@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,10 +20,10 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-
-from pde_superresolution_2d import metadata_pb2
 import typing
 from typing import Tuple, Type, TypeVar
+
+from pde_superresolution_2d import metadata_pb2
 
 T = TypeVar('T')
 
@@ -74,6 +75,12 @@ class Grid(typing.NamedTuple(
     """Returns the shape of the grid."""
     return (self.size_x, self.size_y)
 
+  @property
+  def ndim(self) -> int:
+    """Number of grid dimensions."""
+    # currently always 2.
+    return len(self.shape)
+
   def get_mesh(
       self, shift: Tuple[int, int] = (0, 0)) -> Tuple[np.ndarray, np.ndarray]:
     """Generates grid mesh for function evaluation.
@@ -94,13 +101,11 @@ class Grid(typing.NamedTuple(
     if len(shift) != 2:
       raise ValueError('shift length must be equal to two')
     half_step = self.step / 2.
-    shift_x = shift[0] * half_step
-    shift_y = shift[1] * half_step
+    shift_x = (1 + shift[0]) * half_step
+    shift_y = (1 + shift[1]) * half_step
     return np.meshgrid(
-        np.linspace(
-            shift_x, self.length_x + shift_x, self.size_x, endpoint=False),
-        np.linspace(
-            shift_y, self.length_y + shift_y, self.size_y, endpoint=False),
+        shift_x + self.step * np.arange(self.size_x),
+        shift_y + self.step * np.arange(self.size_y),
         indexing='ij')
 
   def to_proto(self) -> metadata_pb2.Grid:

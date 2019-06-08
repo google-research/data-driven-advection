@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,9 +18,14 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import collections
+import typing
+from typing import Dict, List, Mapping, Sequence, Tuple, Union
+
+import numpy as np
 from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import states
 import tensorflow as tf
-from typing import Dict, List, Sequence, Tuple, Union
 
 
 def auto_nest(func):
@@ -178,7 +184,7 @@ def extract_patches_2d(
 
   size_x, size_y = kernel_size
   extracted = tf.extract_image_patches(padded[..., tf.newaxis],
-                                       ksizes=[1, size_x, size_y, 1],
+                                       sizes=[1, size_x, size_y, 1],
                                        strides=[1, 1, 1, 1],
                                        rates=[1, 1, 1, 1],
                                        padding='VALID')
@@ -191,36 +197,165 @@ def extract_patches_2d(
   return result
 
 
-@auto_nest
-def resample_mean(
-    tensor: tf.Tensor,
-    source_grid: grids.Grid,
-    destination_grid: grids.Grid
-) -> tf.Tensor:
-  """Generates computational graph that downsamples the solution.
+TensorLike = Union[np.ndarray, tf.Tensor]
+
+def regrid_mean(
+    tensor: TensorLike,
+    factor: int,
+    offset: int = 0,
+    axis: int = -1) -> tf.Tensor:
+  """Resample data to a lower-resolution by averaging data point.
 
   Args:
-    tensor: State representing the initial configuration of the system
-    source_grid: Grid defining the high resolution.
-    destination_grid: Grid defining the target low resolution.
+    tensor: input tensor.
+    factor: integer factor by which to reduce the size of the given axis.
+    offset: integer offset at which to place blocks.
+    axis: integer axis to resample over.
 
   Returns:
-    A tensor representing the input state at lower resolution.
+    Array with averaged data along axis.
+
+  Raises:
+    ValueError: if the original axis size is not evenly divided by factor.
+  """
+  if offset:
+    # TODO(shoyer): support this with roll()
+    raise NotImplementedError('offset not supported yet')
+
+  tensor = tf.convert_to_tensor(tensor)
+  shape = tensor.shape.as_list()
+  axis = _normalize_axis(axis, len(shape))
+  multiple, residual = divmod(shape[axis], factor)
+  if residual:
+    raise ValueError('resample factor {} must divide size {}'
+                     .format(factor, shape[axis]))
+
+  new_shape = shape[:axis] + [multiple, factor] + shape[axis+1:]
+  new_shape = [-1 if size is None else size for size in new_shape]
+
+  reshaped = tf.reshape(tensor, new_shape)
+  return tf.reduce_mean(reshaped, axis=axis+1)
+
+
+def regrid_subsample(
+    tensor: TensorLike,
+    factor: int,
+    offset: int = 0,
+    axis: int = -1) -> tf.Tensor:
+  """Resample data to a lower-resolution by subsampling data-points.
+
+  Args:
+    tensor: input tensor.
+    factor: integer factor by which to reduce the size of the given axis.
+    offset: integer offset at which to subsample.
+    axis: integer axis to resample over.
+
+  Returns:
+    Array with subsampled data along axis.
+
+  Raises:
+    ValueError: if the original axis size is not evenly divided by factor.
+  """
+  tensor = tf.convert_to_tensor(tensor)
+  shape = tensor.shape.as_list()
+  axis = _normalize_axis(axis, len(shape))
+  residual = shape[axis] % factor
+  if residual:
+    raise ValueError('resample factor {} must divide size {}'
+                     .format(factor, shape[axis]))
+
+  if offset < 0 or offset >= factor:
+    raise ValueError('invalid offset {} not in [0, {})'.format(offset, factor))
+
+  indexer = [slice(None)] * len(shape)
+  indexer[axis] = slice(offset, None, factor)
+
+  return tensor[tuple(indexer)]
+
+
+def _regrid_tensor(
+    tensor: tf.Tensor,
+    definition: states.StateDefinition,
+    factors: Tuple[int, ...],
+    axes: Tuple[int, ...],
+) -> tf.Tensor:
+  """Regrid a Tensor along all its axes."""
+  result = tensor
+  for factor, cell_offset, axis in zip(factors, definition.offset, axes):
+    # TODO(shoyer): add a notion of the geometry (cell vs face variables)
+    # directly into the data model in StateDefinition?
+    if cell_offset == 0:
+      result = regrid_mean(result, factor, offset=0, axis=axis)
+    elif cell_offset == 1:
+      offset = factor - 1
+      result = regrid_subsample(result, factor, offset, axis)
+    else:
+      raise ValueError('unsupported offset: {}'.format(cell_offset))
+  return result
+
+
+# pylint: disable=unused-argument
+@typing.overload
+def regrid(
+    tensor: TensorLike,
+    definition: states.StateDefinition,
+    source: grids.Grid,
+    destination: grids.Grid
+) -> tf.Tensor:
+  # TODO(shoyer): remove these disable comments, when the next pytype release
+  # comes out with overload support.
+  pass  # pytype: disable=bad-return-type
+
+
+@typing.overload
+def regrid(  # pylint: disable=function-redefined
+    tensor: Mapping[str, TensorLike],
+    definition: Mapping[str, states.StateDefinition],
+    source: grids.Grid,
+    destination: grids.Grid
+) -> Dict[str, tf.Tensor]:
+  # TODO(shoyer): remove these disable comments, when the next pytype release
+  # comes out with overload support.
+  pass  # pytype: disable=bad-return-type
+# pylint: enable=unused-argument
+
+
+def regrid(inputs, definitions, source, destination):  # pylint: disable=function-redefined
+  """Regrid to lower resolution using an appropriate method.
+
+  This function assumes that quantities at staggered grid locations should be
+  regridded using subsampling instead of averages. This is appropriate for
+  typical finite difference/volume discretizations.
+
+  Args:
+    inputs: state(s) representing the initial configuration of the system
+    definitions: definition(s) of this tensor quantity.
+    source: fine resolution Grid.
+    destination: coarse resolution Grid.
+
+  Returns:
+    Tensor(s) representing the input state at lower resolution.
 
   Raises:
     ValueError: Grids sizes are not compatible for downsampling.
   """
-  # TODO(shoyer): move to grids.py?
-  current_size_x, current_size_y = source_grid.shape
-  new_size_x, new_size_y = destination_grid.shape
-  if current_size_x % new_size_x != 0 or current_size_y % new_size_y != 0:
-    raise ValueError('grids are not compatible')
-  x_factor = current_size_x // new_size_x
-  y_factor = current_size_y // new_size_y
+  factors, residuals = zip(*[
+      divmod(current_size, new_size)
+      for current_size, new_size in zip(source.shape, destination.shape)
+  ])
 
-  tmp_grid_shape = [new_size_x, x_factor, new_size_y, y_factor]
-  tmp_shape = tensor.shape.as_list()[:-2] + tmp_grid_shape
-  return tf.reduce_mean(tf.reshape(tensor, tmp_shape), axis=(-3, -1))
+  if any(residuals):
+    raise ValueError('grids are not aligned: {} vs {}'
+                     .format(source, destination))
+
+  axes = tuple(-(n + 1) for n in reversed(range(source.ndim)))
+
+  if isinstance(inputs, collections.Mapping):
+    result = {k: _regrid_tensor(inputs[k], definitions[k], factors, axes)
+              for k in inputs}
+  else:
+    result = _regrid_tensor(inputs, definitions, factors, axes)
+  return result
 
 
 @auto_nest
@@ -232,6 +367,12 @@ def moveaxis(tensor: tf.Tensor, source: int, destination: int) -> tf.Tensor:
   order = [n for n in range(ndim) if n != source]
   order.insert(destination, source)
   return tf.transpose(tensor, order)
+
+
+@auto_nest
+def swap_xy(tensor: tf.Tensor) -> tf.Tensor:
+  """Swap x and y dimensions on a tensor."""
+  return moveaxis(tensor, -2, -1)
 
 
 @auto_nest

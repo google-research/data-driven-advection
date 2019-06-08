@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,17 +19,17 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from typing import Dict, Union
+
 import numpy as np
 from pde_superresolution_2d.core import models
-from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
 import tensorflow as tf
-from typing import Dict, Union
 
 nest = tf.contrib.framework.nest
 
 
-KeyedTensors = Dict[states.StateKey, tf.Tensor]
+KeyedTensors = Dict[str, tf.Tensor]
 
 # Note: Python's type system allows supplying substituting integers for floats
 ArrayLike = Union[np.ndarray, np.generic, float]
@@ -57,10 +58,11 @@ def integrate_steps(
     values at each requested time.
   """
   state = nest.map_structure(tf.convert_to_tensor, state)
+  steps = tf.convert_to_tensor(steps)
   constant_state = {k: v for k, v in state.items()
-                    if k in model.equation.CONSTANT_KEYS}
+                    if k in model.equation.constant_keys}
   evolving_state = {k: v for k, v in state.items()
-                    if k not in model.equation.CONSTANT_KEYS}
+                    if k in model.equation.evolving_keys}
 
   def advance_one_step(evolving_state, time):
     del time  # unused
@@ -76,12 +78,12 @@ def integrate_steps(
     result = tf.foldl(advance_one_step, times, initializer=evolving_state)
     return result
 
-  starts = np.concatenate([[0], steps[:-1]])
+  starts = tf.concat([tf.zeros([1], dtype=steps.dtype), steps[:-1]], axis=0)
   integrated = tf.scan(advance_until_saved_step, [starts, steps],
                        initializer=evolving_state)
 
   integrated_constants = nest.map_structure(
-      lambda x: tf.broadcast_to(x, [len(steps)] + x.shape.as_list()),
+      lambda x: tf.broadcast_to(x, steps.shape.as_list() + x.shape.as_list()),
       constant_state)
   integrated.update(integrated_constants)
 

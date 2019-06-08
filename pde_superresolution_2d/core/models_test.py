@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,40 +19,62 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from absl import flags
-from absl.testing import flagsaver
 from absl.testing import parameterized
 import numpy as np
 from pde_superresolution_2d import metadata_pb2
+from pde_superresolution_2d.advection import equations as advection_equations
 from pde_superresolution_2d.core import equations
+from pde_superresolution_2d.core import geometry
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import models
-from pde_superresolution_2d.core import readers
 from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
-from pde_superresolution_2d.pipelines import create_training_data
 import tensorflow as tf
 
 from absl.testing import absltest
-
-FLAGS = flags.FLAGS
-
-nest = tf.contrib.framework.nest
 
 
 # Use eager mode by default
 tf.enable_eager_execution()
 
 
-C = states.StateKey('concentration', (0, 0, 0), (0, 0))
-C_EDGE_X = states.StateKey('concentration', (0, 0, 0), (1, 0))
-C_EDGE_Y = states.StateKey('concentration', (0, 0, 0), (0, 1))
-C_X = states.StateKey('concentration', (1, 0, 0), (0, 0))
-C_Y = states.StateKey('concentration', (0, 1, 0), (0, 0))
-C_X_EDGE_X = states.StateKey('concentration', (1, 0, 0), (1, 0))
-C_Y_EDGE_Y = states.StateKey('concentration', (0, 1, 0), (0, 1))
-C_XX = states.StateKey('concentration', (2, 0, 0), (0, 0))
-C_YY = states.StateKey('concentration', (0, 2, 0), (0, 0))
+StateDef = states.StateDefinition
+
+NO_DERIVATIVES = (0, 0, 0)
+D_X = (1, 0, 0)
+D_Y = (0, 1, 0)
+D_XX = (2, 0, 0)
+D_YY = (0, 2, 0)
+
+NO_OFFSET = (0, 0)
+X_PLUS_HALF = (1, 0)
+Y_PLUS_HALF = (0, 1)
+
+
+class BuildStencilsTest(absltest.TestCase):
+
+  def assert_sequences_allclose(self, a, b):
+    self.assertEqual(len(a), len(b))
+    for a_entry, b_entry in zip(a, b):
+      np.testing.assert_allclose(a_entry, b_entry)
+
+  def test_build_stencils(self):
+    sk00 = StateDef(name='foo', tensor_indices=(), derivative_orders=(0, 0, 0),
+                    offset=(0, 0))
+    sk10 = StateDef(name='foo', tensor_indices=(), derivative_orders=(0, 0, 0),
+                    offset=(1, 0))
+    self.assert_sequences_allclose([[-1, 0, 1], [-1, 0, 1]],
+                                   models.build_stencils(sk00, sk00, 3, 1.0))
+    self.assert_sequences_allclose([[-2, 0, 2], [-2, 0, 2]],
+                                   models.build_stencils(sk00, sk00, 3, 2.0))
+    self.assert_sequences_allclose([[-1, 0, 1], [-1, 0, 1]],
+                                   models.build_stencils(sk00, sk00, 4, 1.0))
+    self.assert_sequences_allclose([[-2, -1, 0, 1, 2], [-2, -1, 0, 1, 2]],
+                                   models.build_stencils(sk00, sk00, 5, 1.0))
+    self.assert_sequences_allclose([[-0.5, 0.5], [-1, 0, 1]],
+                                   models.build_stencils(sk00, sk10, 3, 1.0))
+    self.assert_sequences_allclose([[-0.5, 0.5], [-1, 0, 1]],
+                                   models.build_stencils(sk10, sk00, 3, 1.0))
 
 
 class FiniteDifferenceModelTest(parameterized.TestCase):
@@ -70,10 +93,24 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
   def test_from_centered(self, model_cls, model_kwargs):
 
     class Equation(equations.Equation):
-      STATE_KEYS = (C,)
-      INPUT_KEYS = (C, C_EDGE_X, C_EDGE_Y, C_X, C_Y, C_X_EDGE_X,
-                    C_Y_EDGE_Y, C_XX, C_YY)
       METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+
+      def __init__(self):
+        self.key_definitions = {
+            'c': StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+            'c_edge_x':
+                StateDef('concentration', (), NO_DERIVATIVES, X_PLUS_HALF),
+            'c_edge_y':
+                StateDef('concentration', (), NO_DERIVATIVES, Y_PLUS_HALF),
+            'c_x': StateDef('concentration', (), D_X, NO_OFFSET),
+            'c_y': StateDef('concentration', (), D_Y, NO_OFFSET),
+            'c_x_edge_x': StateDef('concentration', (), D_X, X_PLUS_HALF),
+            'c_y_edge_y': StateDef('concentration', (), D_Y, Y_PLUS_HALF),
+            'c_xx': StateDef('concentration', (), D_XX, NO_OFFSET),
+            'c_yy': StateDef('concentration', (), D_YY, NO_OFFSET),
+        }
+        self.evolving_keys = {'c'}
+        self.constant_keys = set()
 
     grid = grids.Grid.from_period(10, length=1)
     equation = Equation()
@@ -83,28 +120,30 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
         np.random.RandomState(0).random_sample((1,) + grid.shape), tf.float32)
 
     # create variables, then reset them all to zero
-    model.spatial_derivatives({C: inputs})
+    model.spatial_derivatives({'c': inputs})
     for variable in model.variables:
       variable.assign(tf.zeros_like(variable))
 
-    actual_derivatives = model.spatial_derivatives({C: inputs})
+    actual_derivatives = model.spatial_derivatives({'c': inputs})
 
     expected_derivatives = {
-        C: inputs,
-        C_EDGE_X: (inputs + tensor_ops.roll_2d(inputs, (-1, 0))) / 2,
-        C_EDGE_Y: (inputs + tensor_ops.roll_2d(inputs, (0, -1))) / 2,
-        C_X: (-tensor_ops.roll_2d(inputs, (1, 0))
-              + tensor_ops.roll_2d(inputs, (-1, 0))) / (2 * grid.step),
-        C_Y: (-tensor_ops.roll_2d(inputs, (0, 1))
-              + tensor_ops.roll_2d(inputs, (0, -1))) / (2 * grid.step),
-        C_X_EDGE_X: (-inputs + tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step,
-        C_Y_EDGE_Y: (-inputs + tensor_ops.roll_2d(inputs, (0, -1))) / grid.step,
-        C_XX: (tensor_ops.roll_2d(inputs, (1, 0))
-               - 2 * inputs
-               + tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step ** 2,
-        C_YY: (tensor_ops.roll_2d(inputs, (0, 1))
-               - 2 * inputs
-               + tensor_ops.roll_2d(inputs, (0, -1))) / grid.step ** 2,
+        'c': inputs,
+        'c_edge_x': (inputs + tensor_ops.roll_2d(inputs, (-1, 0))) / 2,
+        'c_edge_y': (inputs + tensor_ops.roll_2d(inputs, (0, -1))) / 2,
+        'c_x': (-tensor_ops.roll_2d(inputs, (1, 0))
+                + tensor_ops.roll_2d(inputs, (-1, 0))) / (2 * grid.step),
+        'c_y': (-tensor_ops.roll_2d(inputs, (0, 1))
+                + tensor_ops.roll_2d(inputs, (0, -1))) / (2 * grid.step),
+        'c_x_edge_x': (
+            -inputs + tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step,
+        'c_y_edge_y': (
+            -inputs + tensor_ops.roll_2d(inputs, (0, -1))) / grid.step,
+        'c_xx': (tensor_ops.roll_2d(inputs, (1, 0))
+                 - 2 * inputs
+                 + tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step ** 2,
+        'c_yy': (tensor_ops.roll_2d(inputs, (0, 1))
+                 - 2 * inputs
+                 + tensor_ops.roll_2d(inputs, (0, -1))) / grid.step ** 2,
     }
 
     for key, expected in sorted(expected_derivatives.items()):
@@ -126,9 +165,21 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
   def test_from_edge(self, model_cls, model_kwargs):
 
     class Equation(equations.Equation):
-      STATE_KEYS = (C_EDGE_X,)
-      INPUT_KEYS = (C, C_EDGE_X, C_EDGE_Y, C_X, C_X_EDGE_X, C_XX)
       METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+
+      def __init__(self):
+        self.key_definitions = {
+            'c': StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+            'c_edge_x':
+                StateDef('concentration', (), NO_DERIVATIVES, X_PLUS_HALF),
+            'c_edge_y':
+                StateDef('concentration', (), NO_DERIVATIVES, Y_PLUS_HALF),
+            'c_x': StateDef('concentration', (), D_X, NO_OFFSET),
+            'c_x_edge_x': StateDef('concentration', (), D_X, X_PLUS_HALF),
+            'c_xx': StateDef('concentration', (), D_XX, NO_OFFSET),
+        }
+        self.evolving_keys = {'c_edge_x'}
+        self.constant_keys = set()
 
     grid = grids.Grid.from_period(10, length=1)
     equation = Equation()
@@ -138,29 +189,29 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
         np.random.RandomState(0).random_sample((1,) + grid.shape), tf.float32)
 
     # create variables, then reset them all to zero
-    model.spatial_derivatives({C_EDGE_X: inputs})
+    model.spatial_derivatives({'c_edge_x': inputs})
     for variable in model.variables:
       variable.assign(tf.zeros_like(variable))
 
-    actual_derivatives = model.spatial_derivatives({C_EDGE_X: inputs})
+    actual_derivatives = model.spatial_derivatives({'c_edge_x': inputs})
 
     expected_derivatives = {
-        C: (tensor_ops.roll_2d(inputs, (1, 0)) + inputs) / 2,
-        C_EDGE_X: inputs,
-        C_EDGE_Y: (
+        'c': (tensor_ops.roll_2d(inputs, (1, 0)) + inputs) / 2,
+        'c_edge_x': inputs,
+        'c_edge_y': (
             inputs
             + tensor_ops.roll_2d(inputs, (0, -1))
             + tensor_ops.roll_2d(inputs, (1, 0))
             + tensor_ops.roll_2d(inputs, (1, -1))
         ) / 4,
-        C_X: (-tensor_ops.roll_2d(inputs, (1, 0)) + inputs) / grid.step,
-        C_X_EDGE_X: (
+        'c_x': (-tensor_ops.roll_2d(inputs, (1, 0)) + inputs) / grid.step,
+        'c_x_edge_x': (
             -tensor_ops.roll_2d(inputs, (1, 0))
             + tensor_ops.roll_2d(inputs, (-1, 0))) / (2 * grid.step),
-        C_XX: (1/2 * tensor_ops.roll_2d(inputs, (2, 0))
-               - 1/2 * tensor_ops.roll_2d(inputs, (1, 0))
-               - 1/2 * inputs
-               + 1/2 * tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step ** 2,
+        'c_xx': (1/2 * tensor_ops.roll_2d(inputs, (2, 0))
+                 - 1/2 * tensor_ops.roll_2d(inputs, (1, 0))
+                 - 1/2 * inputs
+                 + 1/2 * tensor_ops.roll_2d(inputs, (-1, 0))) / grid.step ** 2,
     }
 
     for key, expected in sorted(expected_derivatives.items()):
@@ -169,89 +220,97 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
           atol=1e-5, rtol=1e-5, err_msg=repr(key))
 
 
-class IntegrationTest(parameterized.TestCase):
+class FiniteDifferenceDiffusionEquation(equations.Equation):
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
 
-  @classmethod
-  def setUpClass(cls):
-    # create training data
-    output_path = FLAGS.test_tmpdir
-    output_name = 'temp'
-    with flagsaver.flagsaver(
-        dataset_path=output_path,
-        dataset_name=output_name,
-        dataset_type='time_evolution',
-        num_shards=1,
-        total_time_steps=5,
-        example_time_steps=8,
-        time_step_interval=1,
-        num_seeds=10):
-      create_training_data.main([])
+  def __init__(self):
+    self.key_definitions = {
+        'c': StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'c_xx': StateDef('concentration', (), D_XX, NO_OFFSET),
+        'c_yy': StateDef('concentration', (), D_YY, NO_OFFSET),
+    }
+    self.evolving_keys = {'c'}
+    self.constant_keys = set()
+    super(FiniteDifferenceDiffusionEquation, self).__init__()
 
-    metadata_path = '{}/{}.metadata'.format(output_path, output_name)
-    cls.metadata = readers.load_metadata(metadata_path)
-    super(IntegrationTest, cls).setUpClass()
+  def time_derivative(self, grid, c, c_xx, c_yy):
+    del grid, c  # unused
+    return {'c': c_xx + c_yy}
 
-  @parameterized.parameters(
-      dict(model_cls=models.FiniteDifferenceModel),
-      dict(model_cls=models.LinearModel),
-      dict(model_cls=models.PseudoLinearModel),
-      dict(model_cls=models.NonlinearModel),
-      dict(model_cls=models.DirectModel),
-  )
-  def test_training(self, model_cls):
-    # a basic integration test
-    equation = readers.get_equation(self.metadata)
-    grid = readers.get_output_grid(self.metadata)
-    model = model_cls(equation, grid)
 
-    def create_inputs(state):
-      inputs = nest.map_structure(lambda x: x[:-1], state)
-      labels = state['concentration'][1:]
-      return inputs, labels
+class FiniteVolumeDiffusionEquation(equations.Equation):
+  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
 
-    training_data = (
-        model.load_data(self.metadata)
-        .repeat()
-        .shuffle(100)
-        .map(create_inputs)
-    )
-    model.compile(optimizer=tf.train.AdamOptimizer(1e-4),
-                  loss='mean_squared_error')
-    model.fit(training_data, epochs=1, steps_per_epoch=100)
-    model.evaluate(training_data, steps=10)
+  def __init__(self):
+    self.key_definitions = {
+        'c': StateDef('concentration', (), NO_DERIVATIVES, NO_OFFSET),
+        'c_x': StateDef('concentration', (), D_X, X_PLUS_HALF),
+        'c_y': StateDef('concentration', (), D_Y, Y_PLUS_HALF),
+    }
+    self.evolving_keys = {'c'}
+    self.constant_keys = set()
+    super(FiniteVolumeDiffusionEquation, self).__init__()
+
+  def time_derivative(self, grid, c, c_x, c_y):
+    del grid, c  # unused
+    c_xx = c_x - tensor_ops.roll_2d(c_x, (1, 0))
+    c_yy = c_y - tensor_ops.roll_2d(c_y, (0, 1))
+    return {'c': c_xx + c_yy}
+
+
+class RotationalInvarianceTest(parameterized.TestCase):
 
   @parameterized.parameters(
-      dict(model_cls=models.LinearModel),
-      dict(model_cls=models.PseudoLinearModel),
-      dict(model_cls=models.NonlinearModel),
+      dict(equation=FiniteDifferenceDiffusionEquation(),
+           model_cls=models.FiniteDifferenceModel),
+      dict(equation=FiniteVolumeDiffusionEquation(),
+           model_cls=models.FiniteDifferenceModel),
+      dict(equation=advection_equations.FiniteVolumeAdvection(),
+           model_cls=models.FiniteDifferenceModel),
+      dict(equation=FiniteDifferenceDiffusionEquation(),
+           model_cls=models.PseudoLinearModel,
+           predict_permutations=True),
+      dict(equation=FiniteDifferenceDiffusionEquation(),
+           model_cls=models.PseudoLinearModel,
+           predict_permutations=False),
+      dict(equation=FiniteVolumeDiffusionEquation(),
+           model_cls=models.PseudoLinearModel,
+           predict_permutations=True),
+      dict(equation=FiniteVolumeDiffusionEquation(),
+           model_cls=models.PseudoLinearModel,
+           predict_permutations=False),
+      dict(equation=advection_equations.FiniteVolumeAdvection(),
+           model_cls=models.PseudoLinearModel,
+           predict_permutations=True),
+      dict(equation=advection_equations.FiniteVolumeAdvection(),
+           model_cls=models.PseudoLinearModel,
+           predict_permutations=False),
   )
-  def test_training_multiple_times(self, model_cls):
-    # a basic integration test
-    equation = readers.get_equation(self.metadata)
-    grid = readers.get_output_grid(self.metadata)
-    model = model_cls(equation, grid, num_time_steps=4)
+  def test_rotation_invariance(self, equation, model_cls, **model_kwargs):
+    # even untrained models should be rotationally invariant
+    grid = grids.Grid.from_period(4, length=1)
+    symmetries = geometry.symmetries_of_the_square(equation.key_definitions)
+    if model_cls is models.PseudoLinearModel:
+      model_kwargs.update(geometric_transforms=symmetries)
+    model = model_cls(equation, grid, num_time_steps=2, **model_kwargs)
 
-    def create_inputs(state):
-      # (batch, x, y)
-      inputs = nest.map_structure(lambda x: x[:-model.num_time_steps], state)
-      # (batch, time, x, y)
-      labels = tensor_ops.stack_all_contiguous_slices(
-          state['concentration'][1:], model.num_time_steps, new_axis=1)
-      return inputs, labels
+    rs = np.random.RandomState(0)
+    inputs = {
+        k: tf.convert_to_tensor(rs.random_sample((1,) + grid.shape), tf.float32)
+        for k in equation.base_keys
+    }
+    for forward_model in [model.spatial_derivatives, model.time_derivative]:
+      with self.subTest(forward_model):
+        expected = forward_model(inputs)
+        self.assertNotEmpty(expected)
 
-    training_data = (
-        model.load_data(self.metadata)
-        .map(create_inputs)
-        .apply(tf.data.experimental.unbatch())
-        .shuffle(100)
-        .repeat()
-        .batch(8, drop_remainder=True)
-        .prefetch(1)
-    )
-    model.compile(optimizer=tf.train.AdamOptimizer(1e-4),
-                  loss='mean_squared_error')
-    model.fit(training_data, epochs=1, steps_per_epoch=100)
-    model.evaluate(training_data, steps=10)
+        for transform in symmetries:
+          actual = transform.inverse(forward_model(transform.forward(inputs)))
+          for k in sorted(expected):
+            np.testing.assert_allclose(
+                actual[k].numpy(), expected[k].numpy(), atol=1e-5, rtol=1e-5,
+                err_msg='{}: {}'.format(k, transform))
+
 
 if __name__ == '__main__':
   absltest.main()

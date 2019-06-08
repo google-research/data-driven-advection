@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,26 +23,21 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from typing import Dict, Iterable, List, Sequence, Tuple
+
 from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import utils
-from tensorflow import gfile
 import tensorflow as tf
-from typing import Dict, Iterable, List, Sequence, Tuple
+from tensorflow.io import gfile
 from google.protobuf import text_format
-
-# Imports to register equations by name in equations.CONTINUOUS_EQUATIONS.
-# pylint: disable=unused-import,g-bad-import-order
-from pde_superresolution_2d.advection import equations as advection_equations
-from pde_superresolution_2d.floods import equations as floods_equations
-# pylint: enable=unused-import,g-bad-import-order
 
 
 def initialize_dataset(
     metadata: metadata_pb2.Dataset,
-    requested_data_keys: Sequence[Sequence[states.StateKey]],
+    requested_data_keys: Sequence[Sequence[states.StateDefinition]],
     requested_data_grids: Sequence[grids.Grid],
 ) -> tf.data.Dataset:
   """Returns a tf.data.Dataset, setup to provide requested states.
@@ -64,7 +60,7 @@ def initialize_dataset(
 
   def parse_function(example_proto):
     """Parsing function that converts example proto to a tuple of states."""
-    parsed_features = tf.parse_single_example(example_proto, features)
+    parsed_features = tf.io.parse_single_example(example_proto, features)
     # TODO(dkochkov) Consider switching logic to use parse_example.
     output_states = []
     for state_keys, grid in zip(requested_data_keys, requested_data_grids):
@@ -86,33 +82,33 @@ def load_metadata(metadata_path: str) -> metadata_pb2.Dataset:
   Returns:
     Dataset message generated from the file.
   """
-  with gfile.Open(metadata_path) as reader:
+  with gfile.GFile(metadata_path) as reader:
     proto = text_format.Parse(reader.read(), metadata_pb2.Dataset())
   return proto
 
 
 def data_component_keys(
     components: Iterable[metadata_pb2.Dataset.DataComponent]
-) -> List[Tuple[states.StateKey, grids.Grid]]:
+) -> List[Tuple[states.StateDefinition, grids.Grid]]:
   """Parses data components from the metadata.
 
   Args:
-    metadata: Dataset protocol buffer holding the metadata for the dataset.
+    components: Dataset protocol buffer holding the metadata for the dataset.
 
   Returns:
-    Components in the dataset organized as tuple of StateKey, Grid pairs.
+    Components in the dataset organized as tuple of StateDefinition, Grid pairs.
   """
   data_components = []
   for component in components:
-    data_components.append((states.StateKey.from_proto(component.state_key),  # pytype: disable=wrong-arg-types
+    data_components.append((states.StateDefinition.from_proto(component.state_key),  # pytype: disable=wrong-arg-types
                             grids.Grid.from_proto(component.grid)))  # pytype: disable=wrong-arg-types
   return data_components
 
 
 def _generate_features(
-    data_components: List[Tuple[states.StateKey, grids.Grid]],
+    data_components: List[Tuple[states.StateDefinition, grids.Grid]],
     example_time_steps: int,
-) -> Dict[str, tf.FixedLenFeature]:
+) -> Dict[str, tf.io.FixedLenFeature]:
   """Generates features dictionary to be used to parse tfrecord files.
 
   Args:
@@ -126,18 +122,19 @@ def _generate_features(
   for state_key, grid in data_components:
     shape = (example_time_steps,) + grid.shape
     string_key = utils.component_name(state_key, grid)
-    features[string_key] = tf.FixedLenFeature(shape, tf.float32)
+    features[string_key] = tf.io.FixedLenFeature(shape, tf.float32)
   return features
 
 
 def _assert_compatible(
-    requested_data_keys: Sequence[Sequence[states.StateKey]],
+    requested_data_keys: Sequence[Sequence[states.StateDefinition]],
     requested_data_grids: Sequence[grids.Grid],
-    available_features: Dict[str, tf.FixedLenFeature]):
+    available_features: Dict[str, tf.io.FixedLenFeature]):
   """Checks that the requested data is available in the dataset.
 
   Args:
-    requested_data_keys: StateKeys of the requested states grouped in tuples.
+    requested_data_keys: StateDefinitions of the requested states grouped in
+      tuples.
     requested_data_grids: Grids corresponding to the data_keys.
     available_features: Dictionary of features available in the dataset.
 

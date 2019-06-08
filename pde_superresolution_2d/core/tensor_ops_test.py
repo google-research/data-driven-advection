@@ -1,3 +1,4 @@
+# python3
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +20,8 @@ from __future__ import print_function
 
 from absl.testing import parameterized
 import numpy as np
+from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
 import tensorflow as tf
 
@@ -82,6 +85,28 @@ class TensorOpsTest(parameterized.TestCase):
     actual = tensor_ops.stack_all_contiguous_slices(tf.range(6), slice_size=4)
     expected = np.stack([np.arange(4), np.arange(1, 5), np.arange(2, 6)])
     np.testing.assert_array_equal(actual, expected)
+
+  def test_regrid(self):
+    tensor = tf.convert_to_tensor(
+        [[1, 2, 3, 4], [5, 6, 7, 8]], dtype=tf.float32)
+    source = grids.Grid(2, 4, step=1)
+    destination = grids.Grid(1, 2, step=2)
+
+    definition = states.StateDefinition('centered', (), (0, 0, 0), (0, 0))
+    actual = tensor_ops.regrid(tensor, definition, source, destination)
+    np.testing.assert_array_equal(actual, [[3.5, 5.5]])
+
+    definition = states.StateDefinition('x_offset', (), (0, 0, 0), (1, 0))
+    actual = tensor_ops.regrid(tensor, definition, source, destination)
+    np.testing.assert_array_equal(actual, [[5.5, 7.5]])
+
+    definition = states.StateDefinition('y_offset', (), (0, 0, 0), (0, 1))
+    actual = tensor_ops.regrid(tensor, definition, source, destination)
+    np.testing.assert_array_equal(actual, [[4, 6]])
+
+    definition = states.StateDefinition('xy_offset', (), (0, 0, 0), (1, 1))
+    actual = tensor_ops.regrid(tensor, definition, source, destination)
+    np.testing.assert_array_equal(actual, [[6, 8]])
 
 
 if __name__ == '__main__':
