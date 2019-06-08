@@ -34,7 +34,6 @@ import tensorflow as tf
 # Imports to register equations by name in equations.CONTINUOUS_EQUATIONS.
 # pylint: disable=unused-import,g-bad-import-order
 from pde_superresolution_2d.advection import equations as advection_equations
-from pde_superresolution_2d.floods import equations as floods_equations
 # pylint: enable=unused-import,g-bad-import-order
 
 from apache_beam import runner as flume_runner
