@@ -3,7 +3,8 @@
 This is not an official Google product.
 
 # Installation (MacOS/Linux)
-This package requires protocol buffer to run, so installation is somewhat more involved than the usual python package. In what follows we assume a virtual environment has been created, using either virtualenv or conda.
+This package requires protocol buffer to run, so installation is somewhat more involved than the usual python package. 
+It is recomended that a virtual environment will be created (using either virtualenv or conda) and actuvated prior to installation.
 
 ```shell
 curl -OL https://github.com/google/protobuf/releases/download/v3.6.1/protoc-3.6.1-linux-x86_64.zip
