@@ -20,6 +20,8 @@ INSTALL_REQUIRES = [
     'numpy',
     'tensorflow',
     'xarray',
+    'apache-beam',
+    'scipy',
 ]
 
 setuptools.setup(
