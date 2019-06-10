@@ -36,8 +36,7 @@ import tensorflow as tf
 from pde_superresolution_2d.advection import equations as advection_equations
 # pylint: enable=unused-import,g-bad-import-order
 
-from apache_beam import runner as flume_runner
-
+from apache_beam import runners
 # our beam pipeline requires eager mode
 tf.enable_eager_execution()
 
@@ -102,7 +101,7 @@ FLAGS = flags.FLAGS
 def main(_, runner=None):
   if runner is None:
     # must create before flags are used
-    runner = flume_runner.DirectRunner()
+    runner = runners.DirectRunner()
 
   # files
   dataset_path = FLAGS.dataset_path

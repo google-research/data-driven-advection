@@ -411,7 +411,9 @@ def build_output_layers(
 ) -> Dict[str, ConstraintLayer]:
   """Build a map of output layers for spatial derivative models."""
   layers = {}
-  for key in learned_keys:
+  # learned_keys is a set; it can change iteration order per python session
+  # need to fix its iteration order to correctly save/load Keras models
+  for key in sorted(learned_keys):
     parent = equation.find_base_key(key)
     key_def = equation.key_definitions[key]
     parent_def = equation.key_definitions[parent]
