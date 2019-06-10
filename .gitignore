@@ -1,0 +1,4 @@
+*__pycache__
+protoc3/
+metadata_pb2.py
+*.egg-info/

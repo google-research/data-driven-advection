@@ -36,7 +36,7 @@ import tensorflow as tf
 from pde_superresolution_2d.advection import equations as advection_equations
 # pylint: enable=unused-import,g-bad-import-order
 
-from apache_beam import runner as flume_runner
+from apache_beam import runners as flume_runner
 
 # our beam pipeline requires eager mode
 tf.enable_eager_execution()
