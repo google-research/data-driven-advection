@@ -184,7 +184,7 @@ def extract_patches_2d(
 
   size_x, size_y = kernel_size
   extracted = tf.extract_image_patches(padded[..., tf.newaxis],
-                                       sizes=[1, size_x, size_y, 1],
+                                       ksizes=[1, size_x, size_y, 1],
                                        strides=[1, 1, 1, 1],
                                        rates=[1, 1, 1, 1],
                                        padding='VALID')
