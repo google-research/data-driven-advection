@@ -17,8 +17,9 @@ import setuptools
 
 INSTALL_REQUIRES = [
     'absl-py',
+    'apache-beam',
     'numpy',
-    'tensorflow',
+    'scipy',
     'xarray',
 ]
 
