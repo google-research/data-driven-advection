@@ -25,10 +25,10 @@ import operator
 from typing import Any, Dict, Tuple, Union
 
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.advection import velocity_fields
 from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import polynomials
 from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
 import tensorflow as tf
@@ -153,8 +153,7 @@ class _AdvectionDiffusionBase(equations.Equation):
 
     # finite differences represents velocities at points;
     # finite volumes represents velocities over the faces of unit-cells.
-    face_average = (
-        self.METHOD != metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE)
+    face_average = self.METHOD is not polynomials.Method.FINITE_DIFFERENCE
     shift_vx = self.key_definitions['x_velocity'].offset
     shift_vy = self.key_definitions['y_velocity'].offset
     vx = v_field.get_velocity_x(
@@ -216,7 +215,6 @@ def upwind_numerical_diffusion(
   return (1 - cfl) * velocity * grid.step / 2
 
 
-@equations.register_continuous_equation('advection_diffusion')
 class AdvectionDiffusion(_AdvectionDiffusionBase):
   """Base class for advection diffusion equations.
 
@@ -229,6 +227,8 @@ class AdvectionDiffusion(_AdvectionDiffusionBase):
     cfl_safety_factor: safety factor by which to reduce the time step from the
       maximum stable time-step, according to the CFL condition.
   """
+
+  CONTINUOUS_EQUATION_NAME = 'advection_diffusion'
 
   def __init__(
       self,
@@ -247,31 +247,17 @@ class AdvectionDiffusion(_AdvectionDiffusionBase):
   def cfl_safety_factor(self) -> float:
     return self._cfl_safety_factor
 
-  @classmethod
-  def from_proto(cls, proto: metadata_pb2.AdvectionDiffusionEquation
-                ) -> equations.Equation:
-    """Construct an equation from a protocol buffer."""
-    return cls(diffusion_coefficient=proto.diffusion_coefficient,
-               cfl_safety_factor=proto.cfl_safety_factor)
-
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    return metadata_pb2.Equation(
-        discretization=dict(
-            name=self.DISCRETIZATION_NAME,
-            method=self.METHOD,
-            monotonic=self.MONOTONIC,
-        ),
-        advection_diffusion=dict(
-            diffusion_coefficient=self.diffusion_coefficient,
-            cfl_safety_factor=self.cfl_safety_factor,
-        ),
+  def get_parameters(self) -> Dict[str, Any]:
+    return dict(
+        diffusion_coefficient=self.diffusion_coefficient,
+        cfl_safety_factor=self.cfl_safety_factor,
     )
 
 
-@equations.register_continuous_equation('advection')
 class Advection(_AdvectionDiffusionBase):
   """Base class for pure-advection equations."""
+
+  CONTINUOUS_EQUATION_NAME = 'advection'
 
   def __init__(self, cfl_safety_factor: float = 0.9):
     self._cfl_safety_factor = cfl_safety_factor
@@ -285,30 +271,16 @@ class Advection(_AdvectionDiffusionBase):
   def cfl_safety_factor(self) -> float:
     return self._cfl_safety_factor
 
-  @classmethod
-  def from_proto(cls, proto: metadata_pb2.AdvectionEquation
-                ) -> equations.Equation:
-    """Construct an equation from a protocol buffer."""
-    return cls(cfl_safety_factor=proto.cfl_safety_factor)
-
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    return metadata_pb2.Equation(
-        discretization=dict(
-            name=self.DISCRETIZATION_NAME,
-            method=self.METHOD,
-            monotonic=self.MONOTONIC,
-        ),
-        advection=dict(
-            cfl_safety_factor=self.cfl_safety_factor,
-        ),
+  def get_parameters(self) -> Dict[str, Any]:
+    return dict(
+        cfl_safety_factor=self.cfl_safety_factor,
     )
 
 
 class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
   """Finite difference advection-diffusion."""
   DISCRETIZATION_NAME = 'finite_difference'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+  METHOD = polynomials.Method.FINITE_DIFFERENCE
   MONOTONIC = False
 
   def __init__(self, *args, **kwargs):
@@ -342,7 +314,7 @@ class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
 class FiniteDifferenceAdvection(Advection):
   """"Finite difference scheme for advection only."""
   DISCRETIZATION_NAME = 'finite_difference'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+  METHOD = polynomials.Method.FINITE_DIFFERENCE
   MONOTONIC = False
 
   def __init__(self, *args, **kwargs):
@@ -383,7 +355,7 @@ class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
   """Finite-volume scheme for advection-diffusion."""
 
   DISCRETIZATION_NAME = 'finite_volume'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  METHOD = polynomials.Method.FINITE_VOLUME
   MONOTONIC = False
 
   def __init__(self, *args, **kwargs):
@@ -421,7 +393,7 @@ class FiniteVolumeAdvection(Advection):
   """Finite-volume scheme for advection-diffusion."""
 
   DISCRETIZATION_NAME = 'finite_volume'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  METHOD = polynomials.Method.FINITE_VOLUME
   MONOTONIC = False
 
   def __init__(self, *args, **kwargs):
@@ -454,7 +426,7 @@ class UpwindAdvectionDiffusion(AdvectionDiffusion):
   """Upwind finite-volume scheme for advection-diffusion."""
 
   DISCRETIZATION_NAME = 'upwind'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  METHOD = polynomials.Method.FINITE_VOLUME
   MONOTONIC = True
 
   def __init__(self, *args, **kwargs):
@@ -493,7 +465,7 @@ class UpwindAdvection(Advection):
   """Upwind finite-volume scheme for advection only."""
 
   DISCRETIZATION_NAME = 'upwind'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  METHOD = polynomials.Method.FINITE_VOLUME
   MONOTONIC = True
 
   def __init__(self, *args, **kwargs):
@@ -615,7 +587,7 @@ class VanLeerMono5AdvectionDiffusion(AdvectionDiffusion):
   """
 
   DISCRETIZATION_NAME = 'van_leer_mono5'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  METHOD = polynomials.Method.FINITE_VOLUME
   MONOTONIC = True
 
   def __init__(self, *args, **kwargs):
@@ -665,7 +637,7 @@ class VanLeerAdvection(Advection):
   """
 
   DISCRETIZATION_NAME = 'van_leer'
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+  METHOD = polynomials.Method.FINITE_VOLUME
   MONOTONIC = True
 
   def __init__(self, *args, **kwargs):

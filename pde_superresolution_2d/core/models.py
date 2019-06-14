@@ -30,7 +30,6 @@ from typing import (
 )
 
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import geometry
 from pde_superresolution_2d.core import grids
@@ -82,7 +81,7 @@ class TimeStepModel(tf.keras.Model):
 
   def load_data(
       self,
-      metadata: metadata_pb2.Dataset,
+      metadata: Mapping[str, Any],
       prefix: states.Prefix = states.Prefix.EXACT,
   ) -> tf.data.Dataset:
     """Load data into a tf.data.Dataset for inferrence or training."""
@@ -148,8 +147,9 @@ class TimeStepModel(tf.keras.Model):
     """
     raise NotImplementedError
 
-  def to_proto(self) -> metadata_pb2.Model:
-    """Creates a protocol buffer holding parameters of the model."""
+  def to_config(self) -> Mapping[str, Any]:
+    """Create a configuration dict for this model. Not possible for all models.
+    """
     raise NotImplementedError
 
 
@@ -259,9 +259,8 @@ class FiniteDifferenceModel(SpatialDerivativeModel):
 
     return result
 
-  def to_proto(self) -> metadata_pb2.Model:
-    params = dict(accuracy_order=self.accuracy_order)
-    return metadata_pb2.Model(finite_difference=params)
+  def to_config(self) -> Mapping[str, Any]:
+    return dict(accuracy_order=self.accuracy_order)
 
 
 def _round_down_to_odd(x):

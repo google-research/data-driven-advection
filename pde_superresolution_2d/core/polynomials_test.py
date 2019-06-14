@@ -22,16 +22,15 @@ from __future__ import print_function
 from absl.testing import absltest  # pylint: disable=g-bad-import-order
 from absl.testing import parameterized
 import numpy as np
+from pde_superresolution_2d.core import polynomials
 import tensorflow as tf
 
-from pde_superresolution_2d import metadata_pb2
-from pde_superresolution_2d.core import polynomials
 
 # this simplifies tests
 tf.enable_eager_execution()
 
-FINITE_DIFF = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
-FINITE_VOL = metadata_pb2.Equation.Discretization.FINITE_VOLUME
+FINITE_DIFF = polynomials.Method.FINITE_DIFFERENCE
+FINITE_VOL = polynomials.Method.FINITE_VOLUME
 
 
 class PolynomialsTest(parameterized.TestCase):

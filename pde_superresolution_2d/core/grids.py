@@ -19,11 +19,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
+from typing import Any, Dict, Mapping, Tuple, Type, TypeVar
 import typing
-from typing import Tuple, Type, TypeVar
 
-from pde_superresolution_2d import metadata_pb2
+import numpy as np
+
 
 T = TypeVar('T')
 
@@ -49,16 +49,17 @@ class Grid(typing.NamedTuple(
     return cls(size, size, step)
 
   @classmethod
-  def from_proto(cls: Type[T], proto: metadata_pb2.Grid) -> T:
-    """Constructs Grid object from proto.
+  def from_config(cls: Type[T], config: Mapping[str, Any]) -> T:
+    """Construct a grid from a configuration dict."""
+    return cls(**config)
 
-    Args:
-      proto: Protocol buffer encoding the grid object.
-
-    Returns:
-      Grid object constructed from the grid protocol buffer.
-    """
-    return cls(proto.size_x, proto.size_y, proto.step)
+  def to_config(self) -> Dict[str, Any]:
+    """Create a configuration dict representing this grid."""
+    return dict(
+        size_x=self.size_x,
+        size_y=self.size_y,
+        step=self.step
+    )
 
   @property
   def length_x(self) -> float:
@@ -107,13 +108,3 @@ class Grid(typing.NamedTuple(
         shift_x + self.step * np.arange(self.size_x),
         shift_y + self.step * np.arange(self.size_y),
         indexing='ij')
-
-  def to_proto(self) -> metadata_pb2.Grid:
-    """Creates a protocol buffer encoding the grid object.
-
-    Returns:
-      Protocol buffer encoding the grid object.
-    """
-    return metadata_pb2.Grid(size_x=self.size_x,
-                             size_y=self.size_y,
-                             step=self.step)

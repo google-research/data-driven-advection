@@ -20,6 +20,7 @@ from __future__ import print_function
 
 import ast
 import os
+import sys
 
 from absl import app
 from absl import flags
@@ -31,7 +32,7 @@ from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.pipelines import beamlib
 import tensorflow as tf
 
-# Imports to register equations by name in equations.CONTINUOUS_EQUATIONS.
+# Ensure Equation subclasses are defined so we can look them up by name.
 # pylint: disable=unused-import,g-bad-import-order
 from pde_superresolution_2d.advection import equations as advection_equations
 # pylint: enable=unused-import,g-bad-import-order
@@ -91,11 +92,14 @@ flags.DEFINE_integer(
     'Integer seed offset for random number generator. This should be larger '
     'than the largest possible number of evaluation seeds, but smaller '
     'than 2^32 (the size of NumPy\'s random number seed).')
-flags.DEFINE_boolean(
-    'debug', False,
-    'Whether to run in debug mode (with the DirectRunner)')
 
 FLAGS = flags.FLAGS
+
+
+def flags_as_dict():
+  module = FLAGS.find_module_defining_flag('dataset_path')
+  flags_list = FLAGS.flags_by_module_dict()[module]
+  return {flag.name: flag.value for flag in flags_list}
 
 
 def main(_, runner=None):
@@ -106,14 +110,14 @@ def main(_, runner=None):
   # files
   dataset_path = FLAGS.dataset_path
   dataset_name = FLAGS.dataset_name
-  metadata_path = os.path.join(dataset_path, dataset_name + '.metadata')
+  metadata_path = os.path.join(dataset_path, dataset_name + '.metadata.json')
   records_path = os.path.join(dataset_path, dataset_name + '.tfrecord')
   num_shards = FLAGS.num_shards
   initialization_seed_offset = FLAGS.initialization_seed_offset
 
   # instantiate components of the system.
   equation_class = equations.matching_equation_type(
-      equations.CONTINUOUS_EQUATIONS[FLAGS.equation_name], FLAGS.discretization)
+      FLAGS.equation_name, FLAGS.discretization)
   equation = equation_class(**ast.literal_eval(FLAGS.equation_kwargs))
 
   simulation_grid = grids.Grid.from_period(FLAGS.simulation_grid_resolution,
@@ -137,10 +141,7 @@ def main(_, runner=None):
       example_time_steps=FLAGS.example_time_steps,
   )
 
-  extra_metadata_fields = dict(
-      initialization_seed_offset=FLAGS.initialization_seed_offset,
-      num_seeds=FLAGS.num_seeds,
-  )
+  flags_dict = flags_as_dict()
 
   seeds = [i + initialization_seed_offset for i in range(num_seeds)]
   rs_params = ast.literal_eval(FLAGS.random_state_params)
@@ -175,7 +176,7 @@ def main(_, runner=None):
             records_path,
             metadata_path,
             num_shards=num_shards,
-            extra_fields=extra_metadata_fields))
+            flags=flags_dict))
 
   runner.run(build_pipeline)
 

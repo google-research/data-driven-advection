@@ -19,13 +19,19 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import enum
 import functools
 from typing import Any, Iterator, Optional, Sequence, Tuple
 
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 import scipy.special
 import tensorflow as tf
+
+
+class Method(enum.Enum):
+  """Discretization method."""
+  FINITE_DIFFERENCE = 1
+  FINITE_VOLUME = 2
 
 
 def regular_stencil_1d(
@@ -89,7 +95,7 @@ def _exponents_up_to_degree(degree: int,
 
 def constraints(
     stencils: Sequence[np.ndarray],
-    method: metadata_pb2.Equation.Discretization.Method,
+    method: Method,
     derivative_orders: Sequence[int],
     accuracy_order: int,
     grid_step: float = None,
@@ -149,7 +155,7 @@ def constraints(
     for exponent, stencil, derivative_order in zip(exponents, stencils,
                                                    derivative_orders):
 
-      if method == metadata_pb2.Equation.Discretization.FINITE_VOLUME:
+      if method is Method.FINITE_VOLUME:
         if grid_step is None:
           raise ValueError('grid_step is required for finite volumes')
         # average value of x**m over a centered grid cell
@@ -157,7 +163,7 @@ def constraints(
             1 / grid_step * ((stencil + grid_step / 2)**(exponent + 1) -
                              (stencil - grid_step / 2)**(exponent + 1)) /
             (exponent + 1))
-      elif method == metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE:
+      elif method is Method.FINITE_DIFFERENCE:
         lhs_terms.append(stencil**exponent)
       else:
         raise ValueError('unexpected method: {}'.format(method))
@@ -186,7 +192,7 @@ def constraints(
 
 def _high_order_coefficients_1d(
     stencil: np.ndarray,
-    method: metadata_pb2.Equation.Discretization.Method,
+    method: Method,
     derivative_order: int,
     grid_step: float = None,
 ) -> np.ndarray:
@@ -202,7 +208,7 @@ def _high_order_coefficients_1d(
 
 def coefficients(
     stencils: Sequence[np.ndarray],
-    method: metadata_pb2.Equation.Discretization.Method,
+    method: Method,
     derivative_orders: Sequence[int],
     accuracy_order: Optional[int] = None,
     grid_step: float = None,
@@ -265,7 +271,7 @@ class PolynomialAccuracy(tf.keras.layers.Layer):
   def __init__(
       self,
       stencils: Sequence[np.ndarray],
-      method: metadata_pb2.Equation.Discretization.Method,
+      method: Method,
       derivative_orders: Sequence[int],
       accuracy_order: int = 1,
       bias_accuracy_order: Optional[int] = 1,
@@ -352,7 +358,7 @@ class PolynomialBias(tf.keras.layers.Layer):
 
 def constraint_layer(
     stencils: Sequence[np.ndarray],
-    method: metadata_pb2.Equation.Discretization.Method,
+    method: Method,
     derivative_orders: Sequence[int],
     constrained_accuracy_order: int = 1,
     initial_accuracy_order: Optional[int] = 1,

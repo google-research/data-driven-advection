@@ -58,7 +58,7 @@ class IntegrationTest(parameterized.TestCase):
         num_seeds=4):
       create_training_data.main([], runner=beam.runners.DirectRunner())
 
-    metadata_path = '{}/{}.metadata'.format(output_path, output_name)
+    metadata_path = '{}/{}.metadata.json'.format(output_path, output_name)
     cls.metadata = readers.load_metadata(metadata_path)
     super(IntegrationTest, cls).setUpClass()
 

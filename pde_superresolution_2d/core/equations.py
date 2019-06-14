@@ -26,21 +26,19 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
-from typing import Any, Dict, Iterator, Set, Tuple, Type, TypeVar, Union
+from typing import (
+    Any, Dict, Iterator, Mapping, Set, Tuple, Type, TypeVar, Union,
+)
 
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import grids
+from pde_superresolution_2d.core import polynomials
 from pde_superresolution_2d.core import states
 import tensorflow as tf
 
-from google.protobuf import message
-
 
 Shape = Union[int, Tuple[int]]
-
-
-CONTINUOUS_EQUATIONS = {}
+T = TypeVar('T')
 
 
 class Equation(object):
@@ -63,9 +61,9 @@ class Equation(object):
     constant_keys: the set of variable names found in key_definitions that fully
       describe the time-independent state of the equation.
   """
-
+  CONTINUOUS_EQUATION_NAME = ...  # type: str
   DISCRETIZATION_NAME = ...   # type: str
-  METHOD = ...  # type: metadata_pb2.Equation.Discretization.Method
+  METHOD = ...  # type: polynomials.Method
   MONOTONIC = ...  # type: bool
 
   key_definitions = ...  # type: Dict[str, states.StateDefinition]
@@ -74,6 +72,10 @@ class Equation(object):
 
   def __init__(self):
     self._validate_keys()
+
+  def get_parameters(self) -> Dict[str, Any]:
+    """Return a dictionary of all parameters used to initialize this object."""
+    return {}
 
   def _validate_keys(self):
     """Validate the key_definitions, evolving_keys and constant_keys attributes.
@@ -235,44 +237,33 @@ class Equation(object):
     """
     raise NotImplementedError
 
-  def to_proto(self) -> metadata_pb2.Equation:
-    """Creates a protocol buffer holding parameters of the equation."""
-    raise NotImplementedError
+  def to_config(self) -> Dict[str, Any]:
+    """Creates a configuration dict representing this equation."""
+    return dict(
+        continuous_equation=self.CONTINUOUS_EQUATION_NAME,
+        discretization=self.DISCRETIZATION_NAME,
+        parameters=self.get_parameters(),
+    )
 
   @classmethod
-  def from_proto(cls, proto: message.Message) -> 'Equation':
-    """Create this equation from an equation-specific protocol buffer."""
-    raise NotImplementedError
+  def from_config(cls: Type[T], config: Mapping[str, Any]) -> T:
+    """Construct an equation from a configuration dict."""
+    continuous_equation = config['continuous_equation']
+    if continuous_equation != cls.CONTINUOUS_EQUATION_NAME:
+      raise ValueError(
+          'wrong continuous equation {} != {}'
+          .format(continuous_equation, cls.CONTINUOUS_EQUATION_NAME))
+
+    discretization = config['discretization']
+    if discretization != cls.DISCRETIZATION_NAME:
+      raise ValueError(
+          'wrong discretization {} != {}'
+          .format(discretization, cls.DISCRETIZATION_NAME))
+
+    return cls(**config['parameters'])
 
 
-T = TypeVar('T')
-
-
-def check_keys(dictionary: Dict[T, Any],
-               expected_keys: Tuple[T, ...]):
-  """Checks if the dictionary keys match the expected keys.
-
-  Args:
-    dictionary: Dictionary to check against expected_keys.
-    expected_keys: Key we expect to find in the dictionary.
-
-  Raises:
-    ValueError: Keys do not match.
-  """
-  if set(dictionary.keys()) != set(expected_keys):
-    raise ValueError('Keys do not match, got {} and {}'.format(
-        set(dictionary.keys()), set(expected_keys)))
-
-
-def register_continuous_equation(key: str):
-  """Register a class with a continuous equation."""
-  def decorator(cls: Type[Equation]):
-    CONTINUOUS_EQUATIONS[key] = cls
-    return cls
-  return decorator
-
-
-def _breadth_first_subclasses(base: Type[Equation]) -> Iterator[Type[Equation]]:
+def _breadth_first_subclasses(base: Type[T]) -> Iterator[Type[T]]:
   """Yields all subclasses of a given class in breadth-first order."""
   # https://stackoverflow.com/questions/3862310
   subclasses = collections.deque([base])
@@ -283,27 +274,39 @@ def _breadth_first_subclasses(base: Type[Equation]) -> Iterator[Type[Equation]]:
 
 
 def matching_equation_type(
-    continuous_equation_type: Type[Equation],
+    continuous_equation: str,
     discretization: str,
 ) -> Type[Equation]:
-  """Find the equation with the matching discretization."""
-  for subclass in _breadth_first_subclasses(continuous_equation_type):
-    if subclass.DISCRETIZATION_NAME == discretization:
-      return subclass
+  """Find the matching equation type."""
+  matches = []
+  candidates = list(_breadth_first_subclasses(Equation))
+  for subclass in candidates:
+    if (subclass.CONTINUOUS_EQUATION_NAME == continuous_equation
+        and subclass.DISCRETIZATION_NAME == discretization):
+      matches.append(subclass)
 
-  raise ValueError('equation {} and discretization {} not found'
-                   .format(continuous_equation_type, discretization))
+  if not matches:
+    equations_list = [c.__name__ for c in candidates]
+    raise ValueError(
+        'continuous equation {!r} and discretization {!r} not found '
+        'in equations list {}. Maybe you forgot to import the '
+        'module that defines the equation first?'
+        .format(continuous_equation, discretization, equations_list))
+  elif len(matches) > 1:
+    raise ValueError('too many matches found: {}'.format(matches))
+
+  return matches[0]
 
 
-def equation_from_proto(
-    proto: metadata_pb2.Equation,
+def equation_from_config(
+    config: Mapping[str, Any],
     discretization: str = None,
 ) -> Equation:
   """Constructs an equation from the Equation protocol buffer.
 
   Args:
-    proto: Equation protocol buffer encoding the Equation.
-    discretization: Override the discretization scheme for the equation. Needed
+    config: equation specific configuration dictionary.
+    discretization: override the discretization scheme for the equation. Needed
       for testing different implementation in training and evaluation.
 
   Returns:
@@ -312,13 +315,8 @@ def equation_from_proto(
   Raises:
     ValueError: Provided protocol buffer was not recognized, check proto names.
   """
+  continuous_equation = config['continuous_equation']
   if discretization is None:
-    discretization = proto.discretization.name
-
-  continuous_equation = proto.WhichOneof('continuous_equation')
-  equation_proto = getattr(proto, continuous_equation)
-
-  base_equation_type = CONTINUOUS_EQUATIONS[continuous_equation]
-  equation_type = matching_equation_type(base_equation_type, discretization)
-  return equation_type.from_proto(equation_proto)
-
+    discretization = config['discretization']
+  equation_type = matching_equation_type(continuous_equation, discretization)
+  return equation_type.from_config(config)

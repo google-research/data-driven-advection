@@ -18,14 +18,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import states
-from tensorflow.io import gfile
-
-from google.protobuf import text_format
 
 
 def component_name(
@@ -59,32 +56,6 @@ def component_name(
   if grid is not None:
     components.append(underscore_join([grid.size_x, grid.size_y]))
   return '/'.join(map(str, components))
-
-
-def save_proto(proto: Any, output_path: str):
-  """Saves a `proto` protocol buffer to the `output_path`.
-
-  Args:
-    proto: Protocol buffer to be written to `output_path`.
-    output_path: Path where to save `proto` protocol buffer.
-  """
-  with gfile.GFile(output_path, 'w') as f:
-    f.write(text_format.MessageToString(proto))
-
-
-def load_proto(proto_path: str, pb_class: Any) -> Any:
-  """Loads protocol buffer from a file.
-
-  Args:
-    proto_path: Full path to the file containing protocol buffer data.
-    pb_class: Message class to be parsed.
-
-  Returns:
-    Dataset message generated from the file.
-  """
-  with gfile.GFile(proto_path) as reader:
-    proto = text_format.Parse(reader.read(), pb_class)
-  return proto
 
 
 def integer_ratio(multiplied, base, epsilon=1e-6) -> int:

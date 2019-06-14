@@ -18,12 +18,12 @@ from __future__ import print_function
 
 from absl.testing import parameterized
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.advection import equations
 from pde_superresolution_2d.core import equations as core_equations
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import integrate
 from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import polynomials
 import tensorflow as tf
 
 from absl.testing import absltest
@@ -48,10 +48,6 @@ ALL_EQUATIONS = ADVECTION_DIFFUSION_EQUATIONS + ADVECTION_EQUATIONS
 
 
 class EquationsTest(parameterized.TestCase):
-
-  def test_equation_map(self):
-    self.assertIn('advection_diffusion', core_equations.CONTINUOUS_EQUATIONS)
-    self.assertIn('advection', core_equations.CONTINUOUS_EQUATIONS)
 
   def test_random_sum_of_gaussians_shape(self):
     grid = grids.Grid.from_period(100, length=10)
@@ -121,27 +117,40 @@ class EquationsTest(parameterized.TestCase):
     self.assertEqual(set(result), equation.evolving_keys)
 
   @parameterized.parameters(*ADVECTION_DIFFUSION_EQUATIONS)
-  def test_advection_diffusion_proto_conversion(self, equation):
-    equation_proto = equation.to_proto()
-    proto = equation_proto.advection_diffusion
-    self.assertEqual(proto.diffusion_coefficient,
+  def test_advection_diffusion_config_conversion(self, equation):
+    config = equation.to_config()
+    expected = {
+        'continuous_equation': 'advection_diffusion',
+        'discretization': equation.DISCRETIZATION_NAME,
+        'parameters': {
+            'diffusion_coefficient': equation.diffusion_coefficient,
+            'cfl_safety_factor': equation.cfl_safety_factor,
+        },
+    }
+    self.assertEqual(config, expected)
+
+    equation_from_config = core_equations.equation_from_config(config)
+    self.assertEqual(type(equation_from_config), type(equation))
+    self.assertEqual(equation_from_config.diffusion_coefficient,
                      equation.diffusion_coefficient)
-    self.assertEqual(proto.cfl_safety_factor, equation.cfl_safety_factor)
-    equation_from_proto = core_equations.equation_from_proto(equation_proto)
-    self.assertEqual(type(equation_from_proto), type(equation))
-    self.assertEqual(equation_from_proto.diffusion_coefficient,
-                     equation.diffusion_coefficient)
-    self.assertEqual(equation_from_proto.cfl_safety_factor,
+    self.assertEqual(equation_from_config.cfl_safety_factor,
                      equation.cfl_safety_factor)
 
   @parameterized.parameters(*ADVECTION_EQUATIONS)
-  def test_advection_proto_conversion(self, equation):
-    equation_proto = equation.to_proto()
-    proto = equation_proto.advection
-    self.assertEqual(proto.cfl_safety_factor, equation.cfl_safety_factor)
-    equation_from_proto = core_equations.equation_from_proto(equation_proto)
-    self.assertEqual(type(equation_from_proto), type(equation))
-    self.assertEqual(equation_from_proto.cfl_safety_factor,
+  def test_advection_config_conversion(self, equation):
+    config = equation.to_config()
+    expected = {
+        'continuous_equation': 'advection',
+        'discretization': equation.DISCRETIZATION_NAME,
+        'parameters': {
+            'cfl_safety_factor': equation.cfl_safety_factor,
+        },
+    }
+    self.assertEqual(config, expected)
+
+    equation_from_config = core_equations.equation_from_config(config)
+    self.assertEqual(type(equation_from_config), type(equation))
+    self.assertEqual(equation_from_config.cfl_safety_factor,
                      equation.cfl_safety_factor)
 
   @parameterized.parameters(
@@ -191,7 +200,7 @@ class EquationsTest(parameterized.TestCase):
     expected = np.stack(
         [np.roll(initial_concentration, i, axis=0) for i in range(10)])
     np.testing.assert_allclose(actual, expected, atol=atol)
-    if equation.METHOD == metadata_pb2.Equation.Discretization.FINITE_VOLUME:
+    if equation.METHOD is polynomials.Method.FINITE_VOLUME:
       np.testing.assert_allclose(actual[-1].sum(), actual[0].sum(), rtol=1e-7)
     else:
       np.testing.assert_allclose(actual[-1].sum(), actual[0].sum(), rtol=1e-3)

@@ -21,12 +21,12 @@ from __future__ import print_function
 
 from absl.testing import parameterized
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.advection import equations as advection_equations
 from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import geometry
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import models
+from pde_superresolution_2d.core import polynomials
 from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
 import tensorflow as tf
@@ -93,7 +93,7 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
   def test_from_centered(self, model_cls, model_kwargs):
 
     class Equation(equations.Equation):
-      METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+      METHOD = polynomials.Method.FINITE_DIFFERENCE
 
       def __init__(self):
         self.key_definitions = {
@@ -165,7 +165,7 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
   def test_from_edge(self, model_cls, model_kwargs):
 
     class Equation(equations.Equation):
-      METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+      METHOD = polynomials.Method.FINITE_DIFFERENCE
 
       def __init__(self):
         self.key_definitions = {
@@ -221,7 +221,7 @@ class FiniteDifferenceModelTest(parameterized.TestCase):
 
 
 class FiniteDifferenceDiffusionEquation(equations.Equation):
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+  METHOD = polynomials.Method.FINITE_DIFFERENCE
 
   def __init__(self):
     self.key_definitions = {
@@ -239,7 +239,7 @@ class FiniteDifferenceDiffusionEquation(equations.Equation):
 
 
 class FiniteVolumeDiffusionEquation(equations.Equation):
-  METHOD = metadata_pb2.Equation.Discretization.FINITE_DIFFERENCE
+  METHOD = polynomials.Method.FINITE_DIFFERENCE
 
   def __init__(self):
     self.key_definitions = {

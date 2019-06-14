@@ -24,7 +24,6 @@ from typing import Any, Tuple, TypeVar
 import warnings
 
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import grids
 import tensorflow as tf
 
@@ -82,18 +81,6 @@ class VelocityField(object):
     Returns:
       y component of the velocity field as tensor with
       shape=[grid.size_x, grid.size_y] and dtype=float64.
-    """
-    raise NotImplementedError
-
-  def to_proto(self) -> metadata_pb2.VelocityField:
-    """Creates a protocol buffer holding parameters of the velocity field."""
-    raise NotImplementedError
-
-  def from_proto(self, proto: Any):
-    """Reads a protocol buffer to reconstruct the values of the velocity field.
-
-    Args:
-      proto: Protocol buffer holding the velocity field data.
     """
     raise NotImplementedError
 
@@ -247,43 +234,6 @@ class ConstantVelocityField(VelocityField):
     velocity_y = method(VelocityComponent.Y, grid, shift)
     return velocity_y
 
-  def to_proto(self) -> metadata_pb2.VelocityField:
-    """Creates a protocol buffer holding parameters of the velocity field.
-
-    Returns:
-      Protocol buffer holding parameters of the velocity field.
-    """
-    proto = metadata_pb2.VelocityField(
-        constant_v_field=dict(
-            amplitudes=self.amplitudes.tolist(),
-            x_wavenumbers=self.x_wavenumbers.tolist(),
-            y_wavenumbers=self.y_wavenumbers.tolist(),
-            phase_shifts=self.phase_shifts.tolist()
-        )
-    )
-    return proto
-
-  @classmethod
-  def from_proto(
-      cls,
-      proto: metadata_pb2.ConstantVelocityField
-  ) -> VelocityField:
-    """Creates an instance of a ConstantVelocityField from a protocol buffer.
-
-    Args:
-      proto: Protocol buffer holding constant velocity field data.
-
-    Returns:
-      ConstantVelocityField object initialized from the protocol buffer.
-    """
-    velocity_field = cls(
-        np.asarray(proto.x_wavenumbers),
-        np.asarray(proto.y_wavenumbers),
-        np.asarray(proto.amplitudes),
-        np.asarray(proto.phase_shifts),
-    )
-    return velocity_field
-
   @classmethod
   def from_seed(
       cls,
@@ -332,22 +282,3 @@ class ConstantVelocityField(VelocityField):
 
     return type(self)(self.x_wavenumbers, self.y_wavenumbers,
                       amplitudes, self.phase_shifts)
-
-
-def velocity_field_from_proto(
-    proto: metadata_pb2.VelocityField) -> VelocityField:
-  """Constructs a VelocityField object from a protocol buffer.
-
-  Args:
-    proto: VelocityField message encoding the instance of a VelocityField.
-
-  Returns:
-    VelocityField object.
-
-  Raises:
-    ValueError: Provided protocol buffer was not recognized, check proto names.
-  """
-  if proto.WhichOneof('v_field') == 'constant_v_field':
-    pb = getattr(proto, proto.WhichOneof('v_field'))
-    return ConstantVelocityField.from_proto(pb)
-  raise ValueError('Velocity field protocol buffer is not recognized')

@@ -76,7 +76,7 @@ class WriteReadDataTest(absltest.TestCase):
     ):
       create_training_data.main([], runner=beam.runners.DirectRunner())
 
-    metadata_path = os.path.join(output_path, output_name + '.metadata')
+    metadata_path = os.path.join(output_path, output_name + '.metadata.json')
     self.assertTrue(gfile.exists(metadata_path))
     dataset_metadata = readers.load_metadata(metadata_path)
     low_res_grid = readers.get_output_grid(dataset_metadata)
@@ -91,8 +91,6 @@ class WriteReadDataTest(absltest.TestCase):
     self.assertAlmostEqual(
         equation.diffusion_coefficient, diffusion_coefficient)
     self.assertIs(type(equation), type(expected_equation))
-    self.assertEqual(dataset_metadata.model.WhichOneof('model'),
-                     'finite_difference')
 
     state_keys = expected_equation.key_definitions
     valid_data_keys = ((state_keys['concentration'].exact(),),
@@ -153,7 +151,7 @@ class WriteReadDataTest(absltest.TestCase):
     ):
       create_training_data.main([], runner=beam.runners.DirectRunner())
 
-    metadata_path = os.path.join(output_path, output_name + '.metadata')
+    metadata_path = os.path.join(output_path, output_name + '.metadata.json')
     dataset_metadata = readers.load_metadata(metadata_path)
     low_res_grid = readers.get_output_grid(dataset_metadata)
 
@@ -170,12 +168,12 @@ class WriteReadDataTest(absltest.TestCase):
     expected_mean = np.mean(all_data)
     expected_variance = np.var(all_data, ddof=1)
 
-    keys = readers.data_component_keys(dataset_metadata.components)
-    components_dict = {k: v for k, v in zip(keys, dataset_metadata.components)}
+    keys = readers.data_component_keys(dataset_metadata['components'])
+    components_dict = dict(zip(keys, dataset_metadata['components']))
 
     component = components_dict[data_key, low_res_grid]
-    metadata_mean = component.mean
-    metadata_variance = component.variance
+    metadata_mean = component['statistics']['mean']
+    metadata_variance = component['statistics']['variance']
 
     np.testing.assert_allclose(metadata_mean, expected_mean, atol=1e-3)
     np.testing.assert_allclose(metadata_variance, expected_variance, atol=1e-3)

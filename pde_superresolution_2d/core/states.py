@@ -21,9 +21,8 @@ from __future__ import print_function
 
 import enum
 import typing
-from typing import Tuple, Type, TypeVar
+from typing import Any, Dict, Mapping, Tuple, Type, TypeVar
 
-from pde_superresolution_2d import metadata_pb2
 
 T = TypeVar('T')
 
@@ -48,13 +47,6 @@ class Dimension(enum.IntEnum):
   Y = 2
   Z = 3
 
-  @classmethod
-  def from_proto(cls: Type[T], proto: metadata_pb2.State.TensorIndex) -> T:
-    return cls[metadata_pb2.State.TensorIndex.Name(proto)]
-
-  def to_proto(self) -> metadata_pb2.State.TensorIndex:
-    return metadata_pb2.State.TensorIndex.Name(self.value)
-
 
 class StateDefinition(typing.NamedTuple(
     'StateDefinition', [
@@ -66,46 +58,39 @@ class StateDefinition(typing.NamedTuple(
   """Description of the physical quantity that a state tensor corresponds to.
 
   Example usage:
-    x_velocity = StateDefinition(
-        'velocity', (metadata_pb2.State.X,), (0, 0, 0), (0, 0))
+    x_velocity = StateDefinition('velocity', (Dimension.X,), (0, 0, 0), (0, 0))
 
   Attributes:
     name: name of the corresponding physical variable.
-    tensor_indices: tuple of metadata_pb2.State.TensorIndex enum values
+    tensor_indices: tuple of Dimension enum values
       indicating the physical tensor components that this state corresponds to,
-      e.g., () for a scalar tensor, (metadata_pb2.State.X,) for the x-component
-      of a vector and (metadata_pb2.State.Y,) for the y-component of a vector.
+      e.g., () for a scalar tensor, (Dimension.X,) for the x-component of a
+      vector and (Dimension.Y,) for the y-component of a vector.
     derivative_orders: derivative orders with respect to x, y, t respectively.
     offset: number of half-integer shifts on the grid. An offset of (0, 0) is
       centered on the unit-cell.
   """
 
   @classmethod
-  def from_proto(cls: Type[T], proto: metadata_pb2.State) -> T:
-    """Construct a state from a proto."""
-    name = proto.name
+  def from_config(cls: Type[T], config: Mapping[str, Any]) -> T:
+    """Construct a state from a configuration dict."""
+    name = config['name']
     tensor_indices = tuple(
-        Dimension.from_proto(index) for index in proto.tensor_indices
+        Dimension[index] for index in config['tensor_indices']
     )
-    derivative_orders = (proto.deriv_x, proto.deriv_y, proto.deriv_t)
-    offset = (proto.offset_x, proto.offset_y)
+    derivative_orders = tuple(config['derivative_orders'])
+    offset = tuple(config['offset'])
     return cls(name, tensor_indices, derivative_orders, offset)
 
-  def to_proto(self) -> metadata_pb2.State:
-    """Creates a protocol buffer representing the state component."""
-    tensor_indices = [index.to_proto() for index in self.tensor_indices]
-    deriv_x, deriv_y, deriv_t = self.derivative_orders
-    offset_x, offset_y = self.offset
-    state_proto = metadata_pb2.State(
+  def to_config(self) -> Dict[str, Any]:
+    """Creates a configuration dict representing the state definition."""
+    tensor_indices = [index.name for index in self.tensor_indices]
+    return dict(
         name=self.name,
         tensor_indices=tensor_indices,
-        deriv_x=deriv_x,
-        deriv_y=deriv_y,
-        deriv_t=deriv_t,
-        offset_x=offset_x,
-        offset_y=offset_y,
+        derivative_orders=list(self.derivative_orders),
+        offset=list(self.offset),
     )
-    return state_proto
 
   def swap_xy(self: T) -> T:
     """Swap x and y dimensions on this state."""

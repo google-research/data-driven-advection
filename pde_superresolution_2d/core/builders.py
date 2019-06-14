@@ -22,11 +22,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import json
 import operator
-from typing import Dict, List, Mapping, Tuple, TypeVar
+from typing import Any, Dict, List, Mapping, Tuple, TypeVar
 
 import numpy as np
-from pde_superresolution_2d import metadata_pb2
 from pde_superresolution_2d.core import equations
 from pde_superresolution_2d.core import grids
 from pde_superresolution_2d.core import integrate
@@ -35,6 +35,7 @@ from pde_superresolution_2d.core import states
 from pde_superresolution_2d.core import tensor_ops
 from pde_superresolution_2d.core import utils
 import tensorflow as tf
+from tensorflow.io import gfile
 
 nest = tf.contrib.framework.nest
 
@@ -187,19 +188,16 @@ class Builder(object):
       records_path: str,
       metadata_path: str,
       num_shards: int,
-      extra_fields: dict,  # pylint: disable=g-bare-generic
+      flags: Mapping[str, Any],
   ) -> None:
     """Saves dataset metadata to `path`."""
-    # pytype disabled due to b/120915509
-    # pytype: disable=wrong-arg-types
     data_components = []
     for (key, grid), (mean, variance) in statistics_dict.items():
       data_components.append(
-          metadata_pb2.Dataset.DataComponent(
-              grid=grid.to_proto(),
-              state_key=key.to_proto(),
-              mean=mean,
-              variance=variance,
+          dict(
+              grid=grid.to_config(),
+              state_definition=key.to_config(),
+              statistics=dict(mean=mean, variance=variance),
           )
       )
 
@@ -209,20 +207,19 @@ class Builder(object):
         '-{0:0{width}}-of-{1:0{width}}'.format(shard, num_shards, width=5)
         for shard in range(num_shards)]
 
-    metadata = metadata_pb2.Dataset(
+    config = dict(
         components=data_components,
         file_names=file_names,
-        equation=self.equation.to_proto(),
-        model=self.model.to_proto(),
-        output_grid=self.output_grid.to_proto(),
-        simulation_grid=self.simulation_grid.to_proto(),
+        equation=self.equation.to_config(),
+        model=self.model.to_config(),
+        output_grid=self.output_grid.to_config(),
+        simulation_grid=self.simulation_grid.to_config(),
         times=self.times.tolist(),
         example_time_steps=self.example_time_steps,
-        num_shards=num_shards,
-        **extra_fields
+        flags=flags,
     )
-    # pytype: enable=wrong-arg-types
-    utils.save_proto(metadata, metadata_path)
+    with gfile.GFile(metadata_path, 'w') as f:
+      f.write(json.dumps(config, indent=4, sort_keys=True))
 
 
 class TimeDerivatives(Builder):

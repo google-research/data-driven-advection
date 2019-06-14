@@ -80,18 +80,6 @@ class ConstantVelocityFieldTest(absltest.TestCase):
     np.testing.assert_allclose(y_shift_velocity_x, y_shift_approx_v_x, atol=0.1)
     np.testing.assert_allclose(y_shift_velocity_y, y_shift_approx_v_y, atol=0.1)
 
-  def test_proto_conversion(self):
-    vfield = velocity_fields.ConstantVelocityField.from_seed(seed=0)
-    velocity_proto = vfield.to_proto().constant_v_field
-    np.testing.assert_allclose(np.asarray(velocity_proto.amplitudes),
-                               vfield.amplitudes, rtol=1e-6)
-    np.testing.assert_allclose(np.asarray(velocity_proto.x_wavenumbers),
-                               vfield.x_wavenumbers, rtol=1e-6)
-    np.testing.assert_allclose(np.asarray(velocity_proto.y_wavenumbers),
-                               vfield.y_wavenumbers, rtol=1e-6)
-    np.testing.assert_allclose(np.asarray(velocity_proto.phase_shifts),
-                               vfield.phase_shifts, rtol=1e-6)
-
   def test_face_average(self):
     # construct a velocity field that covers every branch in the integral
     vfield = velocity_fields.ConstantVelocityField(

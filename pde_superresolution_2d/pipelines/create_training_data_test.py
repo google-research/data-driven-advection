@@ -71,7 +71,7 @@ class CreateTrainingDataTest(parameterized.TestCase):
     # verify that file was written
     data_path = os.path.join(output_path,
                              output_name + '.tfrecord-00000-of-0000%i' % shards)
-    metadata_path = os.path.join(output_path, output_name + '.metadata')
+    metadata_path = os.path.join(output_path, output_name + '.metadata.json')
     self.assertTrue(gfile.Exists(data_path))
     self.assertTrue(gfile.Exists(metadata_path))
 
