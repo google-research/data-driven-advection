@@ -3,15 +3,9 @@
 This is not an official Google product.
 
 # Installation (MacOS/Linux)
-This package requires protocol buffer to run, so installation is somewhat more involved than the usual python package. In what follows we assume a virtual environment has been created, using either virtualenv or conda.
-
-```python
-curl -OL https://github.com/google/protobuf/releases/download/v3.6.1/protoc-3.6.1-linux-x86_64.zip
-unzip -o protoc-3.6.1-linux-x86_64.zip -d protoc3
-pip install protobuf==3.6.1
-
+Installation is most easily done using pip:
+```bash
 git clone https://github.com/googleprivate/pde-superresolution-2d.git
-SRC_DIR = pde-superresolution-2d/pde_superresolution_2d
-protoc3/bin/protoc -I=$SRC_DIR --python_out=$SRC_DIR $SRC_DIR/metadata.proto
 pip install -e pde-superresolution-2d
 ```
+Note that we assume TensorFlow is already installed. We chose not to include tensorflow in the python dependencies, because installing it automatically might override the gpu version of it.
