@@ -65,10 +65,9 @@ def integrate_steps(
                     if k in model.equation.evolving_keys}
 
   def advance_one_step(evolving_state, time):
-    del time  # unused
     inputs = dict(evolving_state)
     inputs.update(constant_state)
-    outputs = model.take_time_step(inputs)
+    outputs = model.take_time_step(time, inputs)
     return outputs
 
   def advance_until_saved_step(evolving_state, start_stop):
