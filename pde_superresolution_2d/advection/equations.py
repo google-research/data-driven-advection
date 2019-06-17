@@ -299,7 +299,7 @@ class FiniteDifferenceAdvectionDiffusion(AdvectionDiffusion):
     super(FiniteDifferenceAdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self, grid, concentration, x_velocity, y_velocity, concentration_x,
+      self, time, grid, concentration, x_velocity, y_velocity, concentration_x,
       concentration_y, concentration_xx, concentration_yy):
     """See base class."""
     del grid, concentration  # unused
@@ -331,7 +331,7 @@ class FiniteDifferenceAdvection(Advection):
     super(FiniteDifferenceAdvection, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self, grid, concentration, x_velocity, y_velocity,
+      self, time, grid, concentration, x_velocity, y_velocity,
       concentration_x, concentration_y):
     """See base class."""
     del grid, concentration  # unused
@@ -378,7 +378,7 @@ class FiniteVolumeAdvectionDiffusion(AdvectionDiffusion):
     super(FiniteVolumeAdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self, grid, concentration, x_velocity, y_velocity, concentration_edge_x,
+      self, time, grid, concentration, x_velocity, y_velocity, concentration_edge_x,
       concentration_edge_y, concentration_x_edge_x, concentration_y_edge_y):
     """See base class."""
     del concentration  # unused
@@ -412,7 +412,7 @@ class FiniteVolumeAdvection(Advection):
     super(FiniteVolumeAdvection, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self, grid, concentration, x_velocity, y_velocity, concentration_edge_x,
+      self, time, grid, concentration, x_velocity, y_velocity, concentration_edge_x,
       concentration_edge_y):
     """See base class."""
     del concentration  # unused
@@ -445,7 +445,7 @@ class UpwindAdvectionDiffusion(AdvectionDiffusion):
     super(UpwindAdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def time_derivative(
-      self, grid, concentration, x_velocity, y_velocity, concentration_x_edge_x,
+      self, time, grid, concentration, x_velocity, y_velocity, concentration_x_edge_x,
       concentration_y_edge_y):
     """See base class."""
     c = concentration
@@ -479,7 +479,7 @@ class UpwindAdvection(Advection):
     self.constant_keys = {'x_velocity', 'y_velocity'}
     super(UpwindAdvection, self).__init__(*args, **kwargs)
 
-  def time_derivative(self, grid, concentration, x_velocity, y_velocity):
+  def time_derivative(self, time, grid, concentration, x_velocity, y_velocity):
     """See base class."""
     c = concentration
     c_right = tensor_ops.roll_2d(c, (-1, 0))
@@ -606,7 +606,7 @@ class VanLeerMono5AdvectionDiffusion(AdvectionDiffusion):
     super(VanLeerMono5AdvectionDiffusion, self).__init__(*args, **kwargs)
 
   def take_time_step(
-      self, grid, concentration, x_velocity, y_velocity, concentration_x_edge_x,
+      self, time, grid, concentration, x_velocity, y_velocity, concentration_x_edge_x,
       concentration_y_edge_y):
     """See base class."""
     dx = dy = grid.step
@@ -658,7 +658,7 @@ class VanLeerAdvection(Advection):
 
     super(VanLeerAdvection, self).__init__(*args, **kwargs)
 
-  def take_time_step(self, grid, concentration, x_velocity, y_velocity):
+  def take_time_step(self, time, grid, concentration, x_velocity, y_velocity):
     """See base class."""
     dx = dy = grid.step
     dt = self.get_time_step(grid)

@@ -157,7 +157,7 @@ class Equation(object):
     raise AssertionError  # should be impossible per _validate_keys()
 
   def time_derivative(
-      self, grid: grids.Grid, **inputs: tf.Tensor
+      self, time: tf.float32, grid: grids.Grid, **inputs: tf.Tensor
   ) -> Dict[str, tf.Tensor]:
     """Returns time derivative of the given state.
 
@@ -174,7 +174,7 @@ class Equation(object):
     raise NotImplementedError
 
   def take_time_step(
-      self, grid: grids.Grid, **inputs: tf.Tensor
+      self, time: tf.float32, grid: grids.Grid, **inputs: tf.Tensor
   ) -> Dict[str, tf.Tensor]:
     """Take single time-step.
 
@@ -189,7 +189,7 @@ class Equation(object):
     Returns:
       Updated values for each non-constant term in the state.
     """
-    time_derivs = self.time_derivative(grid, **inputs)
+    time_derivs = self.time_derivative(time, grid, **inputs)
     dt = self.get_time_step(grid)
     new_state = {k: inputs[k] + dt * time_derivs[k]
                  for k in self.evolving_keys}

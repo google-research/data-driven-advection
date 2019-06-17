@@ -124,7 +124,7 @@ class TimeStepModel(tf.keras.Model):
     return advanced
 
   def time_derivative(
-      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+      self, time: tf.float32, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """Compute the time derivative.
 
     Args:
@@ -136,10 +136,11 @@ class TimeStepModel(tf.keras.Model):
     raise NotImplementedError
 
   def take_time_step(
-      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+      self, time: tf.float32, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """Take a single time-step.
 
     Args:
+      time: current time
       state: current state of the solution.
 
     Returns:
@@ -169,17 +170,17 @@ class SpatialDerivativeModel(TimeStepModel):
     raise NotImplementedError
 
   def time_derivative(
-      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+      self, time: tf.float32, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """See base class."""
     inputs = self.spatial_derivatives(state)
-    outputs = self.equation.time_derivative(self.grid, **inputs)
+    outputs = self.equation.time_derivative(time, self.grid, **inputs)
     return outputs
 
   def take_time_step(
-      self, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+      self, time: tf.float32, state: Mapping[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
     """See base class."""
     inputs = self.spatial_derivatives(state)
-    outputs = self.equation.take_time_step(self.grid, **inputs)
+    outputs = self.equation.take_time_step(time, self.grid, **inputs)
     return outputs
 
 
