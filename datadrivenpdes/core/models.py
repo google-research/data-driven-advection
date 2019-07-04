@@ -498,6 +498,44 @@ def conv2d_stack(num_outputs, num_layers=5, filters=32, kernel_size=5,
   return model
 
 
+def _rescale_01(array, axis):
+  array_max = tf.reduce_max(array, axis, keep_dims=True)
+  array_min = tf.reduce_min(array, axis, keep_dims=True)
+  return (array - array_min) / (array_max - array_min)
+
+
+class RescaledConv2DStack(tf.keras.Model):
+  """Rescale input fields to stabilize PDE integration."""
+
+  def __init__(self, num_outputs: int, scaled_keys: Set[str], **kwargs):
+    super().__init__()
+    self.original_model = conv2d_stack(num_outputs, **kwargs)
+    self.scaled_keys = scaled_keys
+
+  def call(self, inputs):
+    inputs = inputs.copy()
+    for key in self.scaled_keys:
+      inputs[key] = _rescale_01(inputs[key], axis=(-1, -2))
+
+    return self.original_model(inputs)
+
+
+class ClippedConv2DStack(tf.keras.Model):
+  """Clip input fields to stabilize PDE integration."""
+
+  def __init__(self, num_outputs: int, scaled_keys: Set[str], **kwargs):
+    super().__init__()
+    self.original_model = conv2d_stack(num_outputs, **kwargs)
+    self.scaled_keys = scaled_keys
+
+  def call(self, inputs):
+    inputs = inputs.copy()
+    for key in self.scaled_keys:
+      inputs[key] = tf.clip_by_value(inputs[key], 1e-3, 1.0 - 1e-3)
+
+    return self.original_model(inputs)
+
+
 class PseudoLinearModel(SpatialDerivativeModel):
   """Learn pseudo-linear filters for spatial derivatives."""
 
@@ -507,6 +545,21 @@ class PseudoLinearModel(SpatialDerivativeModel):
                num_time_steps=1, geometric_transforms=None,
                predict_permutations=True, name='pseudo_linear_model',
                **kwargs):
+    # NOTE(jiaweizhuang): Too many input arguments. Only document important or
+    # confusing ones for now.
+    # pylint: disable=g-doc-args
+    """Initialize class.
+
+    Args:
+      core_model_func: callable (function or class object). It should return
+        a Keras model (or layer) instance, which contains trainable weights.
+        The returned core_model instance should take a dict of tensors as input
+        (see the call() method in the base TimeStepModel class).
+        Additional kwargs are passed to this callable to specify hyperparameters
+        of core_model (such as number of layers and convolutional filters).
+    """
+    # pylint: enable=g-doc-args
+
     super().__init__(
         equation, grid, num_time_steps, name)
 

@@ -46,6 +46,48 @@ X_PLUS_HALF = (1, 0)
 Y_PLUS_HALF = (0, 1)
 
 
+class ConvLayersTest(parameterized.TestCase):
+
+  @parameterized.parameters(
+      (models.RescaledConv2DStack,
+       [[-0.5, 0.5], [1.0, 1.5]], [[0.0, 0.5], [0.75, 1.0]], 1e-7),
+      (models.ClippedConv2DStack,
+       [[-0.5, 0.5], [1.0, 1.5]], [[0.0, 0.5], [1.0, 1.0]], 2e-3),
+  )
+  def test_conv2d_variants(self, core_model_func, inputs, expected, atol):
+    # Variable names like `core_model` follow the internal of top-level models,
+    # such as the `PseudoLinearModel` class in `core.models` module.
+    # Here tries to mimic the small inner loop in top-level models.
+
+    # identity layer, does nothing except normalizing input
+    core_model = core_model_func(
+        num_outputs=1,
+        scaled_keys={'concentration'},
+        num_layers=3,
+        filters=1,
+        kernel_size=1,
+        kernel_initializer=tf.initializers.ones,
+        activation=None,
+        use_bias=False
+        )
+
+    # (x, y) -> (batch, x, y)
+    inputs = np.array(inputs, dtype=np.float32)[np.newaxis, ...]
+    # (x, y) -> (batch, x, y, num_outputs)
+    expected = np.array(expected, dtype=np.float32)[np.newaxis, ..., np.newaxis]
+
+    # validate forward pass
+    inputs = {'concentration': tf.convert_to_tensor(inputs)}
+    outputs = core_model(inputs).numpy()
+    np.testing.assert_allclose(outputs, expected, atol=atol)
+
+    # sanity check for backward pass: core_model should be trainable.
+    # We should prevent the use of a simple Python callable for `core_model`,
+    # which can pass the forward call(), integrate() and even Keras model.fit(),
+    # but the training will fail sliently as the weights are not tracked.
+    assert len(core_model.trainable_weights) >= 1
+
+
 class BuildStencilsTest(absltest.TestCase):
 
   def assert_sequences_allclose(self, a, b):
