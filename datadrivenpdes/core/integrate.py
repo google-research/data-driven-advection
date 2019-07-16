@@ -70,17 +70,18 @@ def integrate_steps(
   evolving_state = {k: v for k, v in state.items()
                     if k in model.equation.evolving_keys}
 
-  @tf.function
-  def advance_until_saved_step(state, start_stop):
+  def advance_one_step(state):
+    return model.take_time_step({**state, **constant_state})
+
+  def advance_until_saved_step(evolving_state, start_stop):
     """Integrate until the next step at which to save results."""
     start, stop = start_stop
-    # can't use range() in a for loop with XLA:
-    # https://github.com/tensorflow/tensorflow/issues/30182
-    i = start
-    while i < stop:
-      state = model.take_time_step({**state, **constant_state})
-      i += 1
-    return state
+    result, _ = tf.while_loop(
+        lambda _, i: i < stop,
+        lambda state, i: (advance_one_step(state), i + 1),
+        loop_vars=(evolving_state, start),
+    )
+    return result
 
   if xla_compile:
     advance_until_saved_step = _xla_decorator(advance_until_saved_step)
