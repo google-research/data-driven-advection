@@ -85,15 +85,21 @@ def _pad_periodic_by_axis(
     tensor: tf.Tensor, padding: Sequence[int], axis: int,
 ) -> tf.Tensor:
   """Periodic padding along one axis."""
-  axis = _normalize_axis(axis, len(tensor.shape))
+  ndim = len(tensor.shape)
+
+  axis = _normalize_axis(axis, ndim)
   if len(padding) != 2:
     raise ValueError('padding must have length 2: {}'.format(padding))
   if any(pad < 0 for pad in padding):
     raise ValueError('padding must be positive: {}'.format(padding))
   pad_left, pad_right = padding
 
-  slice_left = (slice(None),) * axis + (slice(-pad_left, None),)
-  slice_right = (slice(None),) * axis + (slice(None, pad_right),)
+  slice_left = [slice(None)] * ndim
+  slice_left[axis] = slice(-pad_left, None)
+  slice_left = tuple(slice_left)
+  slice_right = [slice(None)] * ndim
+  slice_right[axis] = slice(None, pad_right)
+  slice_right = tuple(slice_right)
 
   if pad_left and pad_right:
     tensors = [tensor[slice_left], tensor, tensor[slice_right]]
