@@ -252,7 +252,7 @@ class Equation:
     Returns:
       Tensor(s) representing the input state at lower resolution.
     """
-    return tensor_ops.regrid(state, self.key_definitions, source, destination)
+    return tensor_ops.regrid(state, self.key_definitions, source, destination)  # pytype: disable=bad-return-type
 
   def to_config(self) -> Dict[str, Any]:
     """Creates a configuration dict representing this equation."""

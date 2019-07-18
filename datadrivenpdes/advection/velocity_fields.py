@@ -214,7 +214,7 @@ class ConstantVelocityField(VelocityField):
     del t  # constant velocity field is time independent
     method = self.face_average if face_average else self.evaluate
     velocity_x = method(VelocityComponent.X, grid, shift)
-    return velocity_x
+    return velocity_x  # pytype: disable=bad-return-type
 
   def get_velocity_y(
       self,
@@ -227,7 +227,7 @@ class ConstantVelocityField(VelocityField):
     del t  # constant velocity field is time independent
     method = self.face_average if face_average else self.evaluate
     velocity_y = method(VelocityComponent.Y, grid, shift)
-    return velocity_y
+    return velocity_y  # pytype: disable=bad-return-type
 
   @classmethod
   def from_seed(

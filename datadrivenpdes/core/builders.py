@@ -64,7 +64,7 @@ def convert_to_tf_example(state: StateGridTensors) -> bytes:
 
   feature = {}
   for (state_key, grid), tensor in state.items():
-    feature[utils.component_name(state_key, grid)] = _floats_feature(tensor)
+    feature[utils.component_name(state_key, grid)] = _floats_feature(tensor)  # pytype: disable=wrong-arg-types
   example = tf.train.Example(features=tf.train.Features(feature=feature))
   return example.SerializeToString()
 

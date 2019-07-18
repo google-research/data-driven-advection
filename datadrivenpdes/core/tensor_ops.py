@@ -354,7 +354,7 @@ def regrid(inputs, definitions, source, destination):  # pylint: disable=functio
               for k in inputs}
   else:
     result = _regrid_tensor(inputs, definitions, factors, axes)
-  return result
+  return result  # pytype: disable=bad-return-type
 
 
 def regrid_masked_mean_2d(
