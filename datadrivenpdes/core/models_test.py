@@ -322,12 +322,18 @@ class RotationalInvarianceTest(parameterized.TestCase):
       dict(equation=advection_equations.FiniteVolumeAdvection(),
            model_cls=models.PseudoLinearModel,
            predict_permutations=False),
+      dict(equation=advection_equations.FiniteVolumeAdvection(),
+           model_cls=models.LinearModel,
+           predict_permutations=True),
+      dict(equation=advection_equations.FiniteVolumeAdvection(),
+           model_cls=models.LinearModel,
+           predict_permutations=False),
   )
   def test_rotation_invariance(self, equation, model_cls, **model_kwargs):
     # even untrained models should be rotationally invariant
     grid = grids.Grid.from_period(4, length=1)
     symmetries = geometry.symmetries_of_the_square(equation.key_definitions)
-    if model_cls is models.PseudoLinearModel:
+    if 'predict_permutations' in model_kwargs:
       model_kwargs.update(geometric_transforms=symmetries)
     model = model_cls(equation, grid, num_time_steps=2, **model_kwargs)
 

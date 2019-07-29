@@ -64,6 +64,7 @@ class StateDefinition(typing.NamedTuple):
   tensor_indices: Tuple[Dimension, ...]
   derivative_orders: Tuple[int, int, int]
   offset: Tuple[int, int]
+  variant: str = ''
 
   @classmethod
   def from_config(cls: Type[T], config: Mapping[str, Any]) -> T:

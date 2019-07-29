@@ -50,7 +50,11 @@ def initialize_dataset(
   data_keys = data_component_keys(metadata['components'])
   features = _generate_features(data_keys, metadata['example_num_time_steps'])
   _assert_compatible(requested_data_keys, requested_data_grids, features)
-  train_dataset = tf.data.TFRecordDataset(train_files)
+  train_dataset = tf.data.TFRecordDataset(
+      train_files,
+      buffer_size=int(1e7),
+      num_parallel_reads=16,
+  )
 
   def parse_function(example_proto):
     """Parsing function that converts example proto to a tuple of states."""
