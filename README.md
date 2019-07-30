@@ -20,4 +20,8 @@ pip install -e pde-superresolution-2d
 ```
 
 # Usage
-We wrote a [tutorial notebook](Tutorial.ipynb) demonstrating how to use the framework to define new equations, create a training database, define a model and train it etc. This is still in development, please [open an issue](https://github.com/google-research/data-driven-pdes/issues) if you have questions. 
+We would like to make the code accessible for researchers who want to apply our method to their favorite PDEs. To this end we wrote, and continue to write, tutorials for how to use the framework.
+This is still very much in development, please [open an issue](https://github.com/google-research/data-driven-pdes/issues) if you have questions. 
+
+1. [A tutorial notebook](tutorial/Tutorial.ipynb) that explains some of the basic notions in the code base and demonstrates how to use the framework to define new equations.
+2. [This notebook](tutorial/advection_1d.ipynb) contains a complete example of creating a training database, defining a model, training it and evaluating the trained model (well documented, though less pedagogical). 
