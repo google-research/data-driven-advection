@@ -20,7 +20,7 @@ pip install -e pde-superresolution-2d
 ```
 
 # Usage
-We would like to make the code accessible for researchers who want to apply our method to their favorite PDEs. To this end we wrote, and continue to write, tutorials for how to use the framework.
+We aim to make the code accessible for researchers who want to apply our method to their favorite PDEs. To this end we wrote, and continue to write, tutorials and documentation.
 This is still very much in development, please [open an issue](https://github.com/google-research/data-driven-pdes/issues) if you have questions. 
 
 1. [A tutorial notebook](tutorial/Tutorial.ipynb) that explains some of the basic notions in the code base and demonstrates how to use the framework to define new equations.
