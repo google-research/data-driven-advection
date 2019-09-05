@@ -11,7 +11,46 @@ for the code used to produce results for the PNAS paper.
 
 This is not an official Google product.
 
-# Installation
+# VSCode Docker Container Development
+
+1. [Install Docker on the host Ubuntu Machine](https://phoenixnap.com/kb/how-to-install-docker-on-ubuntu-18-04)
+
+- Step 1: Update the system
+  ```bash
+    sudo apt-get update
+  ```
+
+- Step 2: Uninstall Old Versions of Docker
+  ```bash
+    sudo apt-get remove docker docker-engine docker.io
+  ```
+- Step 3: Install Docker
+  ```bash
+    sudo apt install docker.io
+  ```
+- Step 4: Start and Automate Docker
+  ```bash
+    sudo systemctl start docker
+
+    sudo systemctl enable docker
+  ```
+- Step 5: (Optional) Check Docker version
+  ```bash
+    docker --version
+  ```
+2. [Install VSCode Editor on Ubuntu](https://code.visualstudio.com/download)
+
+3. Open this folder in VSCode and allow for  `VSCode Remote` Extensions to be installed.
+
+4. Running the Jupyter notebooks in the Docker cotnainer.
+
+Running Jupypter notebook
+
+```bash
+    jupyter notebook --ip 0.0.0 --allow-root --no-browser
+```
+
+# Manual Installation
 
 Installation is most easily done using pip.
 1. Create or activate a virtual environment (e.g. using `virtualenv` or `conda`).
