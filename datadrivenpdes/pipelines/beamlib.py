@@ -14,7 +14,12 @@
 # limitations under the License.
 # ==============================================================================
 """Beam utilities."""
-import apache_beam as beam
+
+try:
+  import apache_beam as beam
+except:
+  pass
+
 import numpy as np
 from typing import List, Tuple
 

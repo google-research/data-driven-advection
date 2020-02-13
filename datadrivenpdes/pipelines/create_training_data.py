@@ -19,8 +19,12 @@ import os
 
 from absl import app
 from absl import flags
+
 try:
   import apache_beam as beam
+except:
+  pass
+
 import numpy as np
 from datadrivenpdes.core import builders
 from datadrivenpdes.core import equations
