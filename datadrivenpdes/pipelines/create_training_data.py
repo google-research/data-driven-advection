@@ -19,7 +19,8 @@ import os
 
 from absl import app
 from absl import flags
-import apache_beam as beam
+try:
+  import apache_beam as beam
 import numpy as np
 from datadrivenpdes.core import builders
 from datadrivenpdes.core import equations
