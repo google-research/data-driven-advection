@@ -15,11 +15,7 @@
 # ==============================================================================
 """Beam utilities."""
 
-try:
-  import apache_beam as beam
-except:
-  pass
-
+import apache_beam as beam
 import numpy as np
 from typing import List, Tuple
 

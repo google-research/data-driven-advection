@@ -22,6 +22,7 @@ from absl import flags
 
 try:
   import apache_beam as beam
+  from datadrivenpdes.pipelines import beamlib
 except:
   pass
 
@@ -29,7 +30,6 @@ import numpy as np
 from datadrivenpdes.core import builders
 from datadrivenpdes.core import equations
 from datadrivenpdes.core import grids
-from datadrivenpdes.pipelines import beamlib
 import tensorflow as tf
 
 # Ensure Equation subclasses are defined so we can look them up by name.
