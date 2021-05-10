@@ -1,6 +1,12 @@
-# Data driven discretizations for solving 2D PDEs
+# Data driven discretizations for solving 2D advection problems
 
-This repository explores extensions of the techniques developed in:
+This repository contains the code used in the paper
+
+>  [Learned discretizations for passive scalar advection in a two dimensional turbulent flow](https://arxiv.org/abs/2004.05477).
+>   Physical Review Fluids, in print.
+>   arXiv: 2004.05477
+
+This is an extension of the techniques developed in:
 
 >  [Learning data-driven discretizations for partial differential equations](https://www.pnas.org/content/116/31/15344).
   Yohai Bar-Sinai\*, Stephan Hoyer\*, Jason Hickey, Michael P. Brenner.
