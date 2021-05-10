@@ -3,6 +3,7 @@
 This repository contains the code used in the paper
 
 >  [Learned discretizations for passive scalar advection in a two dimensional turbulent flow](https://arxiv.org/abs/2004.05477).
+>   Jiawei Zhuang, Dmitrii Kochkov, Yohai Bar-Sinai, Michael P. Brenner, Stephan Hoyer.
 >   Physical Review Fluids, in print.
 >   arXiv: 2004.05477
 
