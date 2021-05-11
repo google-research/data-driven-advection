@@ -19,7 +19,12 @@ import os.path
 from absl import flags
 from absl.testing import flagsaver
 from absl.testing import parameterized
-import apache_beam as beam
+
+try:
+  import apache_beam as beam
+except:
+  pass
+
 from datadrivenpdes.core import builders
 from datadrivenpdes.pipelines import create_training_data
 from tensorflow import gfile
